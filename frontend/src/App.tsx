@@ -7,7 +7,7 @@ import ApiPlayground from './components/ApiPlayground';
 
 export type TabType = 'dashboard' | 'ledger' | 'funding_sources' | 'keys_webhooks' | 'playground';
 
-export const API_BASE_URL = 'http://localhost:9500';
+export const API_BASE_URL = window.location.port === '9000' ? 'http://localhost:9500' : window.location.origin;
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');

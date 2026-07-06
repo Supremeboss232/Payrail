@@ -1,0 +1,23 @@
+# Dependency folders
+node_modules/
+**/node_modules/
+
+# Local databases and locks
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+server/payment-rail.db
+
+# Secrets
+.env
+**/ .env
+server/.env
+
+# Local build artifacts
+dist/
+**/dist/
+
+# Git metadata
+.git
+.gitignore

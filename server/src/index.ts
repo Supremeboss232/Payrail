@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import * as dotenv from 'dotenv';
 import * as crypto from 'crypto';
+import * as path from 'path';
 import { initDb, db } from './db';
 import { createAccount, getAccounts, getTransactions, getTransactionEntries, getAccountHistory, postTransaction } from './ledger';
 import { authenticateApiKey, getApiKeys, revokeApiKey, generateApiKey } from './auth';
@@ -192,6 +193,15 @@ app.use('/v1', authenticateApiKey, gatewayRouter);
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Serve frontend static assets in production
+const frontendPath = path.join(__dirname, '../../frontend/dist');
+app.use(express.static(frontendPath));
+
+// Fallback all other routes to index.html for React SPA routing
+app.get('*', (req, res) => {
+  res.sendFile(path.join(frontendPath, 'index.html'));
 });
 
 // Seeding function
