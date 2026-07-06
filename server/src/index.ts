@@ -27,6 +27,23 @@ app.get('/console/accounts', async (req, res) => {
   }
 });
 
+app.post('/console/accounts', async (req, res) => {
+  const { id, name, type, category, currency, initialBalance = 0 } = req.body;
+  try {
+    const account = await createAccount(
+      id,
+      name,
+      type,
+      category,
+      currency,
+      parseInt(initialBalance)
+    );
+    res.status(201).json(account);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/console/accounts/:id/history', async (req, res) => {
   try {
     const history = await getAccountHistory(req.params.id);
@@ -210,54 +227,17 @@ export async function seedDatabase() {
   const count = (accountCount.rows[0] as any).count;
 
   if (count > 0) {
-    console.log('Database already seeded. Skipping initial seed.');
+    console.log('Database already initialized. Skipping seed.');
     return;
   }
 
-  console.log('Seeding initial ledger accounts...');
+  console.log('Initializing database schema defaults...');
 
-  // 1. Create Merchant Destination Account
+  // 1. Create Merchant Destination Account (baseline destination)
   await createAccount('acc_merchant_usd', 'Merchant Cash Drawer', 'asset', 'wallet', 'USD', 0);
 
-  // 2. Create the 7 Online Banks (Assets with initial seeded balances)
-  await createAccount('acc_bank_chase', 'Chase Business Checking', 'asset', 'bank', 'USD', 1250000); // $12,500.00
-  await createAccount('acc_bank_wellsfargo', 'Wells Fargo Treasury', 'asset', 'bank', 'USD', 850000);  // $8,500.00
-  await createAccount('acc_bank_revolut', 'Revolut Business Euro', 'asset', 'bank', 'EUR', 1500000); // €15,000.00
-  await createAccount('acc_bank_wise', 'Wise Multi-Currency Wallet', 'asset', 'bank', 'USD', 500000);  // $5,000.00
-  await createAccount('acc_bank_monzo', 'Monzo Business Reserve', 'asset', 'bank', 'GBP', 2000000); // £20,000.00
-  await createAccount('acc_bank_n26', 'N26 Metal Account', 'asset', 'bank', 'EUR', 300000);  // €3,000.00
-  await createAccount('acc_bank_mercury', 'Mercury Startup Checking', 'asset', 'bank', 'USD', 0);       // $0.00 (failover target)
-
-  // 3. Create Brokers (Asset cash accounts)
-  await createAccount('acc_broker_ibkr', 'Interactive Brokers Cash', 'asset', 'broker_cash', 'USD', 5000000); // $50,000.00
-  await createAccount('acc_broker_robinhood', 'Robinhood Retail Cash', 'asset', 'broker_cash', 'USD', 250000); // $2,500.00
-
-  // 4. Create Logistics accounts (Liabilities)
-  await createAccount('acc_logistics_dhl', 'DHL Accounts Payable', 'liability', 'logistics', 'USD', 0);
-  await createAccount('acc_logistics_fedex', 'FedEx Accounts Payable', 'liability', 'logistics', 'USD', 0);
-
-  console.log('Seeding initial funding sources...');
-  // Configure funding sources with priority rankings
-  const fsSeed = [
-    { id: 'fs_chase', name: 'Chase Checking', type: 'bank', accountId: 'acc_bank_chase', priority: 1 },
-    { id: 'fs_wellsfargo', name: 'Wells Fargo Treasury', type: 'bank', accountId: 'acc_bank_wellsfargo', priority: 2 },
-    { id: 'fs_wise', name: 'Wise Multi-Currency', type: 'bank', accountId: 'acc_bank_wise', priority: 3 },
-    { id: 'fs_revolut', name: 'Revolut Business', type: 'bank', accountId: 'acc_bank_revolut', priority: 4 },
-    { id: 'fs_ibkr', name: 'Interactive Brokers Cash', type: 'broker', accountId: 'acc_broker_ibkr', priority: 5 },
-    { id: 'fs_robinhood', name: 'Robinhood Cash', type: 'broker', accountId: 'acc_broker_robinhood', priority: 6 },
-    { id: 'fs_mercury', name: 'Mercury Startup Checking', type: 'bank', accountId: 'acc_bank_mercury', priority: 7 },
-  ];
-
-  for (const fs of fsSeed) {
-    await db.execute({
-      sql: `INSERT INTO funding_sources (id, name, type, account_id, priority, status, created_at)
-            VALUES (?, ?, ?, ?, ?, 'active', ?)`,
-      args: [fs.id, fs.name, fs.type, fs.accountId, fs.priority, new Date().toISOString()],
-    });
-  }
-
   console.log('Seeding default API Key: sk_live_dev_key_12345...');
-  // Seed a default developer API key so it works out of the box
+  // Seed a default developer API key so the API playground works out of the box
   const rawDevKey = 'sk_live_dev_key_12345';
   const hashedDevKey = crypto.createHash('sha256').update(rawDevKey).digest('hex');
   await db.execute({
@@ -266,7 +246,7 @@ export async function seedDatabase() {
     args: [hashedDevKey, new Date().toISOString()],
   });
 
-  console.log('Seeding completed.');
+  console.log('Database initialization completed.');
 }
 
 // Start Server

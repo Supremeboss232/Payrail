@@ -31,6 +31,51 @@ export default function LedgerTab({ refreshTrigger }: LedgerTabProps) {
   const [accountHistory, setAccountHistory] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Creation form states
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [newId, setNewId] = useState('');
+  const [newName, setNewName] = useState('');
+  const [newType, setNewType] = useState<'asset' | 'liability' | 'equity' | 'revenue' | 'expense'>('asset');
+  const [newCategory, setNewCategory] = useState<'bank' | 'broker_cash' | 'broker_asset' | 'logistics' | 'wallet' | 'revenue' | 'escrow' | 'equity'>('bank');
+  const [newCurrency, setNewCurrency] = useState('USD');
+  const [newInitialBalance, setNewInitialBalance] = useState('0');
+
+  const handleCreateAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newId || !newName || !newCurrency) return;
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/console/accounts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: newId,
+          name: newName,
+          type: newType,
+          category: newCategory,
+          currency: newCurrency.toUpperCase(),
+          initialBalance: parseFloat(newInitialBalance) * 100, // Cents
+        }),
+      });
+
+      if (res.ok) {
+        setNewId('');
+        setNewName('');
+        setNewCurrency('USD');
+        setNewInitialBalance('0');
+        setIsCreateOpen(false);
+        
+        const fetchRes = await fetch(`${API_BASE_URL}/console/accounts`);
+        if (fetchRes.ok) setAccounts(await fetchRes.json());
+      } else {
+        const data = await res.json();
+        alert(`Failed to create account: ${data.error}`);
+      }
+    } catch (err: any) {
+      console.error(err);
+    }
+  };
+
   useEffect(() => {
     const fetchAccounts = async () => {
       try {
@@ -84,36 +129,49 @@ export default function LedgerTab({ refreshTrigger }: LedgerTabProps) {
   return (
     <div style={{ position: 'relative' }}>
       
+      {/* Create Account Header Button */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px' }}>
+        <button className="button" onClick={() => setIsCreateOpen(true)}>
+          <span>➕</span> Create Ledger Account
+        </button>
+      </div>
+      
       {/* List of Accounts Grouped by Type */}
       <div className="glass-panel ledger-tree">
-        {Object.entries(grouped).map(([type, list]) => (
-          <div key={type} className="ledger-category-group">
-            <h4 className="ledger-category-title">{type} Accounts</h4>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              {list.map((account) => (
-                <div 
-                  key={account.id} 
-                  className={`ledger-row ${selectedAccount?.id === account.id ? 'selected' : ''}`}
-                  onClick={() => handleAccountClick(account)}
-                >
-                  <div className="ledger-row-title">
-                    <span style={{ fontSize: '16px' }}>
-                      {account.type === 'asset' ? '📥' : account.type === 'liability' ? '📤' : '💼'}
-                    </span>
-                    <div>
-                      <div style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{account.name}</div>
-                      <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>ID: {account.id} • {account.category.toUpperCase()}</div>
+        {Object.keys(grouped).length === 0 ? (
+          <div style={{ color: 'var(--text-muted)', fontSize: '14px', padding: '16px' }}>
+            No accounts in ledger. Click "Create Ledger Account" to configure your first wallet, bank, or broker ledger account!
+          </div>
+        ) : (
+          Object.entries(grouped).map(([type, list]) => (
+            <div key={type} className="ledger-category-group">
+              <h4 className="ledger-category-title">{type} Accounts</h4>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                {list.map((account) => (
+                  <div 
+                    key={account.id} 
+                    className={`ledger-row ${selectedAccount?.id === account.id ? 'selected' : ''}`}
+                    onClick={() => handleAccountClick(account)}
+                  >
+                    <div className="ledger-row-title">
+                      <span style={{ fontSize: '16px' }}>
+                        {account.type === 'asset' ? '📥' : account.type === 'liability' ? '📤' : '💼'}
+                      </span>
+                      <div>
+                        <div style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{account.name}</div>
+                        <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>ID: {account.id} • {account.category.toUpperCase()}</div>
+                      </div>
+                    </div>
+
+                    <div className="ledger-row-balance">
+                      {formatCurrency(account.balance, account.currency)}
                     </div>
                   </div>
-
-                  <div className="ledger-row-balance">
-                    {formatCurrency(account.balance, account.currency)}
-                  </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
-          </div>
-        ))}
+          ))
+        )}
       </div>
 
       {/* Account History Slider Drawer */}
@@ -148,8 +206,6 @@ export default function LedgerTab({ refreshTrigger }: LedgerTabProps) {
                   ) : (
                     accountHistory.map((item) => {
                       const isAssetOrExpense = selectedAccount.type === 'asset' || selectedAccount.type === 'expense';
-                      // Debit increases asset/expense, Credit decreases asset/expense
-                      // Credit increases liability/equity/revenue, Debit decreases liability/equity/revenue
                       const isIncrease = isAssetOrExpense 
                         ? item.type === 'debit' 
                         : item.type === 'credit';
@@ -197,6 +253,107 @@ export default function LedgerTab({ refreshTrigger }: LedgerTabProps) {
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create Account Slide Out Drawer */}
+      {isCreateOpen && (
+        <div className="drawer-backdrop" onClick={() => setIsCreateOpen(false)}>
+          <div className="drawer" onClick={(e) => e.stopPropagation()}>
+            <div className="drawer-header">
+              <h3 className="drawer-title">Create Ledger Account</h3>
+              <button className="drawer-close" onClick={() => setIsCreateOpen(false)}>×</button>
+            </div>
+
+            <form onSubmit={handleCreateAccount} className="drawer-content">
+              <div className="form-group">
+                <label className="form-label">Account ID (unique)</label>
+                <input 
+                  type="text" 
+                  className="form-input" 
+                  placeholder="e.g. acc_chase_checking" 
+                  value={newId}
+                  onChange={e => setNewId(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Account Name</label>
+                <input 
+                  type="text" 
+                  className="form-input" 
+                  placeholder="e.g. Chase Business Checking" 
+                  value={newName}
+                  onChange={e => setNewName(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div className="grid-2">
+                <div className="form-group">
+                  <label className="form-label">Type</label>
+                  <select 
+                    className="form-select" 
+                    value={newType} 
+                    onChange={e => setNewType(e.target.value as any)}
+                  >
+                    <option value="asset">Asset (Banks/Brokers/Wallets)</option>
+                    <option value="liability">Liability (AP/AP Costs)</option>
+                    <option value="equity">Equity (Investments/Capital)</option>
+                    <option value="revenue">Revenue</option>
+                    <option value="expense">Expense</option>
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Category</label>
+                  <select 
+                    className="form-select" 
+                    value={newCategory} 
+                    onChange={e => setNewCategory(e.target.value as any)}
+                  >
+                    <option value="bank">Bank Account</option>
+                    <option value="broker_cash">Broker Cash</option>
+                    <option value="broker_asset">Broker Asset</option>
+                    <option value="logistics">Logistics Account</option>
+                    <option value="wallet">Wallet Balance</option>
+                    <option value="revenue">Revenue Channel</option>
+                    <option value="escrow">Escrow Hold</option>
+                    <option value="equity">System Equity</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid-2">
+                <div className="form-group">
+                  <label className="form-label">Currency</label>
+                  <input 
+                    type="text" 
+                    className="form-input" 
+                    placeholder="USD" 
+                    value={newCurrency}
+                    onChange={e => setNewCurrency(e.target.value)}
+                    required
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Initial Balance (USD/EUR)</label>
+                  <input 
+                    type="number" 
+                    className="form-input" 
+                    value={newInitialBalance}
+                    onChange={e => setNewInitialBalance(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <button type="submit" className="button" style={{ marginTop: '16px' }}>
+                Create Account
+              </button>
+            </form>
           </div>
         </div>
       )}
