@@ -43,7 +43,7 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted }: ApiPlay
       try {
         const [accsRes, fsRes] = await Promise.all([
           fetch(`${API_BASE_URL}/console/accounts`),
-          fetch(`${API_BASE_URL}/v1/funding_sources`),
+          fetch(`${API_BASE_URL}/console/funding_sources`),
         ]);
 
         if (accsRes.ok && fsRes.ok) {

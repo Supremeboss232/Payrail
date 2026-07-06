@@ -68,6 +68,69 @@ app.get('/console/transactions', async (req, res) => {
   }
 });
 
+app.get('/console/funding_sources', async (req, res) => {
+  try {
+    const result = await db.execute('SELECT * FROM funding_sources ORDER BY priority ASC');
+    res.status(200).json(result.rows);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/console/funding_sources', async (req, res) => {
+  const { name, type, account_id, priority = 0 } = req.body;
+  if (!name || !type || !account_id) {
+    res.status(400).json({ error: 'name, type, and account_id are required.' });
+    return;
+  }
+  const id = `fs_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
+  const createdAt = new Date().toISOString();
+  try {
+    const accResult = await db.execute({
+      sql: 'SELECT id FROM accounts WHERE id = ?',
+      args: [account_id],
+    });
+    if (accResult.rows.length === 0) {
+      res.status(400).json({ error: `Account ${account_id} not found.` });
+      return;
+    }
+    await db.execute({
+      sql: `INSERT INTO funding_sources (id, name, type, account_id, priority, status, created_at)
+            VALUES (?, ?, ?, ?, ?, 'active', ?)`,
+      args: [id, name, type, account_id, priority, createdAt],
+    });
+    res.status(201).json({ id, name, type, account_id, priority, status: 'active', created_at: createdAt });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.patch('/console/funding_sources/:id/swap', async (req, res) => {
+  const { id } = req.params;
+  const { priority, status } = req.body;
+  try {
+    if (priority !== undefined) {
+      await db.execute({
+        sql: 'UPDATE funding_sources SET priority = ? WHERE id = ?',
+        args: [priority, id],
+      });
+    }
+    if (status !== undefined) {
+      await db.execute({
+        sql: 'UPDATE funding_sources SET status = ? WHERE id = ?',
+        args: [status, id],
+      });
+    }
+    const updated = await db.execute({
+      sql: 'SELECT * FROM funding_sources WHERE id = ?',
+      args: [id],
+    });
+    res.status(200).json(updated.rows[0]);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/console/api_keys', async (req, res) => {
   try {
     const keys = await getApiKeys();

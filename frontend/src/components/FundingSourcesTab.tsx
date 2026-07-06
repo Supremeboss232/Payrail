@@ -32,7 +32,7 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
     const fetchData = async () => {
       try {
         const [fsRes, accsRes] = await Promise.all([
-          fetch(`${API_BASE_URL}/v1/funding_sources`),
+          fetch(`${API_BASE_URL}/console/funding_sources`),
           fetch(`${API_BASE_URL}/console/accounts`),
         ]);
 
@@ -61,7 +61,7 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
     if (!fsName || !fsAccountId) return;
 
     try {
-      const res = await fetch(`${API_BASE_URL}/v1/funding_sources`, {
+      const res = await fetch(`${API_BASE_URL}/console/funding_sources`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -96,12 +96,12 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
     try {
       // Swap priorities in backend
       await Promise.all([
-        fetch(`${API_BASE_URL}/v1/funding_sources/${currentFs.id}/swap`, {
+        fetch(`${API_BASE_URL}/console/funding_sources/${currentFs.id}/swap`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ priority: targetFs.priority }),
         }),
-        fetch(`${API_BASE_URL}/v1/funding_sources/${targetFs.id}/swap`, {
+        fetch(`${API_BASE_URL}/console/funding_sources/${targetFs.id}/swap`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ priority: currentFs.priority }),
@@ -118,7 +118,7 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
   const handleToggleStatus = async (fs: FundingSource) => {
     const newStatus = fs.status === 'active' ? 'inactive' : 'active';
     try {
-      const res = await fetch(`${API_BASE_URL}/v1/funding_sources/${fs.id}/swap`, {
+      const res = await fetch(`${API_BASE_URL}/console/funding_sources/${fs.id}/swap`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus }),
