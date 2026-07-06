@@ -1,0 +1,19 @@
+{
+  "name": "payment-rail",
+  "version": "1.0.0",
+  "description": "Private Payment Rail & Double-Entry Ledger Gateway",
+  "main": "index.js",
+  "scripts": {
+    "install:all": "npm install && npm --prefix server install && npm --prefix frontend install",
+    "dev": "concurrently -n \"server,client\" -c \"blue,magenta\" \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "npm --prefix server run dev",
+    "dev:client": "npm --prefix frontend run dev",
+    "build": "npm --prefix server run build && npm --prefix frontend run build",
+    "test:gateway": "npx ts-node scripts/verify_gateway.ts"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.3"
+  }
+}
