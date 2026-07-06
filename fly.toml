@@ -1,10 +1,10 @@
-# fly.toml app configuration file generated for payrail on 2026-07-06T13:15:32Z
+# fly.toml app configuration file generated for payrail-rbb59a on 2026-07-06T17:43:32Z
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
-app = 'payrail'
-primary_region = 'iad'
+app = 'payrail-rbb59a'
+primary_region = 'ams'
 
 [build]
 
