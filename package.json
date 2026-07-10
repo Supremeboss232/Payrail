@@ -10,7 +10,8 @@
     "dev:client": "npm --prefix frontend run dev",
     "build": "npm --prefix server run build && npm --prefix frontend run build",
     "db:reset": "npx ts-node scripts/clear_db.ts",
-    "test:gateway": "npx ts-node scripts/verify_gateway.ts"
+    "test:gateway": "npx ts-node scripts/verify_gateway.ts",
+    "test:live": "npx ts-node scripts/test_live_gateway.ts"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
