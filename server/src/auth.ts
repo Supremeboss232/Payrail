@@ -129,3 +129,13 @@ export async function authenticateApiKey(req: Request, res: Response, next: Next
     });
   }
 }
+
+import { authenticateB2BRequest } from './b2b';
+export async function authenticateGateway(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const isB2B = req.headers['payrail-signature'] && req.headers['payrail-tenant-id'];
+  if (isB2B) {
+    await authenticateB2BRequest(req, res, next);
+  } else {
+    await authenticateApiKey(req, res, next);
+  }
+}

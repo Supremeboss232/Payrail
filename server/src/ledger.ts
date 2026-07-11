@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { db } from './db';
+import { generateMerkleHash } from './b2b';
 
 export interface LedgerEntryInput {
   accountId: string;
@@ -113,7 +114,8 @@ export async function postTransaction(
   sourceChannel: Transaction['source_channel'],
   entries: LedgerEntryInput[],
   referenceId: string | null = null,
-  paymentIntentId: string | null = null
+  paymentIntentId: string | null = null,
+  tenantId: string | null = null
 ): Promise<Transaction> {
   if (entries.length < 2) {
     throw new Error('A transaction must have at least 2 entries.');
@@ -178,11 +180,13 @@ export async function postTransaction(
       }
     }
 
+    const merkleHash = await generateMerkleHash(txId, description, referenceId || '', paymentIntentId || '');
+
     // 3. Write transaction header
     await tx.execute({
-      sql: `INSERT INTO transactions (id, payment_intent_id, description, source_channel, reference_id, status, created_at)
-            VALUES (?, ?, ?, ?, ?, 'posted', ?)`,
-      args: [txId, paymentIntentId, description, sourceChannel, referenceId, timestamp],
+      sql: `INSERT INTO transactions (id, tenant_id, payment_intent_id, description, source_channel, reference_id, status, merkle_hash, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'posted', ?, ?)`,
+      args: [txId, tenantId, paymentIntentId, description, sourceChannel, referenceId, merkleHash, timestamp],
     });
 
     // 4. Write entries and update balances

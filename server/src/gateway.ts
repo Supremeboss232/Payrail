@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { db } from './db';
 import { postTransaction, LedgerEntryInput } from './ledger';
 import { dispatchWebhookEvent } from './webhooks';
+import { buildPacs008, buildPacs009 } from './b2b';
 
 const router = Router();
 
@@ -202,12 +203,15 @@ router.post('/payment_intents/:id/confirm', async (req: Request, res: Response) 
           },
         ];
 
+        const tenantId = (req as any).tenant ? (req as any).tenant.id : null;
+
         await postTransaction(
           `Payment Intent confirm: ${pi.id} via ${fs.name}`,
           'api',
           entries,
           pi.id,
-          pi.id
+          pi.id,
+          tenantId
         );
 
         successfulFs = fs;
@@ -241,10 +245,16 @@ router.post('/payment_intents/:id/confirm', async (req: Request, res: Response) 
         logs: swapLogs,
       });
 
+      // Build ISO 20022 pacs.008 XML payload
+      const sourceBic = (req as any).tenant ? (req as any).tenant.routing_code : 'SYSTEM_BIC';
+      const destBic = 'MERCHANT_BIC';
+      const pacs008Xml = buildPacs008(updatedPi, sourceBic, destBic);
+
       res.status(200).json({
         success: true,
         payment_intent: updatedPi,
         routing_logs: swapLogs,
+        pacs_008_xml: pacs008Xml
       });
     } else {
       await db.execute({
@@ -389,6 +399,86 @@ router.get('/funding_sources', async (req: Request, res: Response) => {
     res.status(200).json(result.rows);
   } catch (error) {
     res.status(500).json({ error: 'Failed to retrieve funding sources.' });
+  }
+});
+
+/**
+ * POST /v1/tenants
+ * Registers a new bank/fintech B2B tenant
+ */
+router.post('/tenants', async (req: Request, res: Response) => {
+  const { id, legal_name, routing_code, public_key_pem } = req.body;
+  if (!id || !legal_name || !routing_code || !public_key_pem) {
+    res.status(400).json({ error: 'id, legal_name, routing_code, and public_key_pem are required.' });
+    return;
+  }
+  const createdAt = new Date().toISOString();
+  try {
+    await db.execute({
+      sql: `INSERT INTO tenants (id, legal_name, routing_code, api_status, public_key_pem, created_at)
+            VALUES (?, ?, ?, 'active', ?, ?)`,
+      args: [id, legal_name, routing_code, public_key_pem, createdAt]
+    });
+    res.status(201).json({ id, legal_name, routing_code, status: 'active', created_at: createdAt });
+  } catch (error: any) {
+    console.error('Create Tenant Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /v1/settlements/dns_sweep
+ * Executes a Deferred Net Settlement (DNS) sweep between two routing BICs
+ */
+router.post('/settlements/dns_sweep', async (req: Request, res: Response) => {
+  const { source_bic, dest_bic, amount, currency } = req.body;
+  if (!source_bic || !dest_bic || !amount || !currency) {
+    res.status(400).json({ error: 'source_bic, dest_bic, amount, and currency are required.' });
+    return;
+  }
+
+  try {
+    const sourceAccResult = await db.execute({
+      sql: 'SELECT id FROM accounts WHERE tenant_id = (SELECT id FROM tenants WHERE routing_code = ?)',
+      args: [source_bic]
+    });
+    const destAccResult = await db.execute({
+      sql: 'SELECT id FROM accounts WHERE tenant_id = (SELECT id FROM tenants WHERE routing_code = ?)',
+      args: [dest_bic]
+    });
+
+    if (sourceAccResult.rows.length === 0 || destAccResult.rows.length === 0) {
+      res.status(400).json({ error: `Clearing accounts not found for routing BICs: ${source_bic} -> ${dest_bic}` });
+      return;
+    }
+
+    const sourceAccountId = (sourceAccResult.rows[0] as any).id;
+    const destAccountId = (destAccResult.rows[0] as any).id;
+
+    const entries: LedgerEntryInput[] = [
+      { accountId: destAccountId, type: 'debit', amount, currency: currency.toUpperCase() },
+      { accountId: sourceAccountId, type: 'credit', amount, currency: currency.toUpperCase() }
+    ];
+
+    const tx = await postTransaction(
+      `Deferred Net Settlement (DNS) Sweep: ${source_bic} -> ${dest_bic}`,
+      'system',
+      entries,
+      `dns_${Date.now()}`,
+      null,
+      null // System-level settlement transaction
+    );
+
+    const pacs009Xml = buildPacs009(tx.id, amount, currency.toUpperCase(), source_bic, dest_bic);
+
+    res.status(201).json({
+      success: true,
+      transaction: tx,
+      pacs_009_xml: pacs009Xml
+    });
+  } catch (error: any) {
+    console.error('DNS Sweep Error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 

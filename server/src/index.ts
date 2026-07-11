@@ -5,7 +5,7 @@ import * as crypto from 'crypto';
 import * as path from 'path';
 import { initDb, db } from './db';
 import { createAccount, getAccounts, getTransactions, getTransactionEntries, getAccountHistory, postTransaction } from './ledger';
-import { authenticateApiKey, getApiKeys, revokeApiKey, generateApiKey } from './auth';
+import { authenticateApiKey, authenticateGateway, getApiKeys, revokeApiKey, generateApiKey } from './auth';
 import { getWebhookEndpoints, createWebhookEndpoint, deleteWebhookEndpoint, getWebhookLogs } from './webhooks';
 import gatewayRouter from './gateway';
 
@@ -268,7 +268,7 @@ app.post('/console/pay_logistics_invoice', async (req, res) => {
 });
 
 // Secure Stripe-like Gateway Router
-app.use('/v1', authenticateApiKey, gatewayRouter);
+app.use('/v1', authenticateGateway, gatewayRouter);
 
 // Health check
 app.get('/health', (req, res) => {

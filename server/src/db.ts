@@ -33,32 +33,63 @@ export async function initDb() {
     }
   }
 
+  // Create tenants table
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS tenants (
+      id TEXT PRIMARY KEY,
+      legal_name TEXT NOT NULL,
+      routing_code TEXT UNIQUE NOT NULL,
+      api_status TEXT NOT NULL DEFAULT 'active' CHECK(api_status IN ('active', 'suspended', 'deactivated')),
+      webhook_url TEXT,
+      public_key_pem TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+  `);
+
   // Create accounts table
   await db.execute(`
     CREATE TABLE IF NOT EXISTS accounts (
       id TEXT PRIMARY KEY,
+      tenant_id TEXT,
       name TEXT NOT NULL,
       type TEXT NOT NULL CHECK(type IN ('asset', 'liability', 'equity', 'revenue', 'expense')),
       category TEXT NOT NULL CHECK(category IN ('bank', 'broker_cash', 'broker_asset', 'logistics', 'wallet', 'revenue', 'escrow', 'equity')),
       currency TEXT NOT NULL,
       balance INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'suspended')),
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE SET NULL
     );
   `);
+
+  // Migrate accounts to add tenant_id if it doesn't exist
+  try {
+    await db.execute("ALTER TABLE accounts ADD COLUMN tenant_id TEXT REFERENCES tenants(id) ON DELETE SET NULL;");
+  } catch (e) {}
 
   // Create transactions table
   await db.execute(`
     CREATE TABLE IF NOT EXISTS transactions (
       id TEXT PRIMARY KEY,
+      tenant_id TEXT,
       payment_intent_id TEXT,
       description TEXT NOT NULL,
       source_channel TEXT NOT NULL CHECK(source_channel IN ('api', 'console', 'system')),
       reference_id TEXT,
       status TEXT NOT NULL CHECK(status IN ('pending', 'posted', 'failed')),
-      created_at TEXT NOT NULL
+      merkle_hash TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE SET NULL
     );
   `);
+
+  // Migrate transactions to add tenant_id and merkle_hash if they don't exist
+  try {
+    await db.execute("ALTER TABLE transactions ADD COLUMN tenant_id TEXT REFERENCES tenants(id) ON DELETE SET NULL;");
+  } catch (e) {}
+  try {
+    await db.execute("ALTER TABLE transactions ADD COLUMN merkle_hash TEXT;");
+  } catch (e) {}
 
   // Create entries table (Double-Entry Bookkeeping Line Items)
   await db.execute(`
