@@ -1,5 +1,5 @@
 import * as crypto from 'crypto';
-import { db, initDb } from '../server/src/db';
+import { vaultDb, railDb, initDb } from '../server/src/db';
 import { seedDatabase } from '../server/src/index';
 
 const BASE_URL = 'http://localhost:9500';
@@ -20,24 +20,29 @@ function signPayload(privateKeyPem: string, body: any): { timestamp: string; sig
 
 async function testB2BFlow() {
   console.log('====================================================');
-  console.log('🛡️ TESTING PAYRAIL B2B SETTLEMENT ENGINE MIGRATIONS');
+  console.log('🛡️ TESTING PAYRAIL DUAL-DATABASE B2B SETTLEMENT FLOW');
   console.log('====================================================');
 
   try {
-    // 1. Wipe database to start fresh
+    // 1. Wipe both databases to start fresh
     console.log('\nStep 1: Resetting database schemas and initial defaults...');
     await initDb();
     
-    // We clear all tables in order
-    await db.execute('DELETE FROM entries');
-    await db.execute('DELETE FROM transactions');
-    await db.execute('DELETE FROM payment_intents');
-    await db.execute('DELETE FROM funding_sources');
-    await db.execute('DELETE FROM accounts');
-    await db.execute('DELETE FROM tenants');
-    await db.execute('DELETE FROM api_keys');
+    // Clear Vault
+    await vaultDb.execute('DELETE FROM webhook_delivery_logs');
+    await vaultDb.execute('DELETE FROM webhook_endpoints');
+    await vaultDb.execute('DELETE FROM api_keys');
+
+    // Clear Rail
+    await railDb.execute('DELETE FROM entries');
+    await railDb.execute('DELETE FROM transactions');
+    await railDb.execute('DELETE FROM payment_intents');
+    await railDb.execute('DELETE FROM funding_sources');
+    await railDb.execute('DELETE FROM accounts');
+    await railDb.execute('DELETE FROM tenants');
+    await railDb.execute('DELETE FROM synced_api_keys');
     
-    // Seed defaults
+    // Seed defaults in both
     await seedDatabase();
 
     // 2. Generate ECDSA keys for Tenant A and Tenant B
@@ -89,11 +94,11 @@ async function testB2BFlow() {
     if (!tenantBRes.ok) throw new Error(`Onboarding Bank B failed: ${JSON.stringify(tenantB)}`);
     console.log(`  Onboarded: ${tenantB.legal_name} (${tenantB.routing_code})`);
 
-    // 4. Create Ledger Accounts scoped to Tenants
+    // 4. Create Ledger Accounts scoped to Tenants inside Rail DB
     console.log('\nStep 4: Setting up multi-tenant ledger accounts...');
     
     // Bank A Settlement clearing account (balance: $10,000.00)
-    await db.execute({
+    await railDb.execute({
       sql: `INSERT INTO accounts (id, tenant_id, name, type, category, currency, balance, status, created_at)
             VALUES ('acc_clearing_banka', 'tenant_bank_a', 'Bank A Clearing Account', 'asset', 'bank', 'USD', 1000000, 'active', ?)`,
       args: [new Date().toISOString()]
@@ -101,7 +106,7 @@ async function testB2BFlow() {
     console.log('  Created Account: acc_clearing_banka (USD $10,000.00) scoped to Tenant A');
 
     // Bank B Settlement clearing account (balance: $2,000.00)
-    await db.execute({
+    await railDb.execute({
       sql: `INSERT INTO accounts (id, tenant_id, name, type, category, currency, balance, status, created_at)
             VALUES ('acc_clearing_bankb', 'tenant_bank_b', 'Bank B Clearing Account', 'asset', 'bank', 'USD', 200000, 'active', ?)`,
       args: [new Date().toISOString()]
@@ -109,7 +114,7 @@ async function testB2BFlow() {
     console.log('  Created Account: acc_clearing_bankb (USD $2,000.00) scoped to Tenant B');
 
     // Link Bank A accounts as a gateway funding source
-    await db.execute({
+    await railDb.execute({
       sql: `INSERT INTO funding_sources (id, name, type, account_id, priority, status, created_at)
             VALUES ('fs_banka_clearing', 'Bank A Local Reserves', 'bank', 'acc_clearing_banka', 1, 'active', ?)`,
       args: [new Date().toISOString()]
@@ -181,9 +186,9 @@ async function testB2BFlow() {
     console.log('  Generated ISO 20022 Pacs.009 financial institution transfer:');
     console.log(dnsData.pacs_009_xml.split('\n').map((l: string) => `    ${l}`).slice(0, 10).join('\n') + '\n    ...');
 
-    // 7. Verify Merkle Chain Log Integrity
+    // 7. Verify Merkle Chain Log Integrity in Rail DB
     console.log('\nStep 7: Validating Merkle ledger integrity...');
-    const txResult = await db.execute('SELECT id, description, reference_id, payment_intent_id, merkle_hash FROM transactions ORDER BY created_at ASC');
+    const txResult = await railDb.execute('SELECT id, description, reference_id, payment_intent_id, merkle_hash FROM transactions ORDER BY created_at ASC');
     
     let previousHash = '0000000000000000000000000000000000000000000000000000000000000000';
     for (const row of txResult.rows as any) {

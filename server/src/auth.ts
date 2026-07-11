@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
-import { db } from './db';
+import { vaultDb, railDb } from './db';
 
 export interface ApiKey {
   id: string;
@@ -21,7 +21,7 @@ function hashKey(rawKey: string): string {
 
 /**
  * Generates a new live API key.
- * Returns both the raw key (to show the user ONCE) and the key metadata.
+ * Stores in vaultDb and syncs metadata to railDb.synced_api_keys.
  */
 export async function generateApiKey(name: string): Promise<{ rawKey: string; key: ApiKey }> {
   const rawKeyBytes = crypto.randomBytes(24).toString('hex'); // 48 chars
@@ -31,8 +31,16 @@ export async function generateApiKey(name: string): Promise<{ rawKey: string; ke
   const id = `key_${uuidv4().replace(/-/g, '').slice(0, 16)}`;
   const createdAt = new Date().toISOString();
 
-  await db.execute({
+  // 1. Store API key in Vault Database
+  await vaultDb.execute({
     sql: `INSERT INTO api_keys (id, key_hash, prefix, name, status, created_at)
+          VALUES (?, ?, ?, ?, 'active', ?)`,
+    args: [id, keyHash, prefix, name, createdAt],
+  });
+
+  // 2. Sync Configuration Handshake to Core Rail Database
+  await railDb.execute({
+    sql: `INSERT INTO synced_api_keys (id, key_hash, prefix, name, status, created_at)
           VALUES (?, ?, ?, ?, 'active', ?)`,
     args: [id, keyHash, prefix, name, createdAt],
   });
@@ -51,19 +59,27 @@ export async function generateApiKey(name: string): Promise<{ rawKey: string; ke
 
 /**
  * Revokes an existing API key.
+ * Updates vaultDb and syncs status update to railDb.
  */
 export async function revokeApiKey(id: string): Promise<void> {
-  await db.execute({
+  // 1. Revoke key in Vault Database
+  await vaultDb.execute({
     sql: `UPDATE api_keys SET status = 'revoked' WHERE id = ?`,
+    args: [id],
+  });
+
+  // 2. Sync Revocation status update to Core Rail Database
+  await railDb.execute({
+    sql: `UPDATE synced_api_keys SET status = 'revoked' WHERE id = ?`,
     args: [id],
   });
 }
 
 /**
- * Retrieves all registered API keys (without hashes or secret contents, just metadata).
+ * Retrieves all registered API keys from the Vault Database.
  */
 export async function getApiKeys(): Promise<Omit<ApiKey, 'key_hash'>[]> {
-  const result = await db.execute(`
+  const result = await vaultDb.execute(`
     SELECT id, prefix, name, status, created_at
     FROM api_keys
     ORDER BY created_at DESC
@@ -73,6 +89,7 @@ export async function getApiKeys(): Promise<Omit<ApiKey, 'key_hash'>[]> {
 
 /**
  * Middleware to authenticate incoming requests via Bearer token API keys.
+ * Validates strictly against railDb.synced_api_keys for complete security isolation.
  */
 export async function authenticateApiKey(req: Request, res: Response, next: NextFunction): Promise<void> {
   const authHeader = req.headers.authorization;
@@ -101,8 +118,9 @@ export async function authenticateApiKey(req: Request, res: Response, next: Next
   const keyHash = hashKey(rawKey);
 
   try {
-    const result = await db.execute({
-      sql: `SELECT * FROM api_keys WHERE key_hash = ? AND status = 'active'`,
+    // Validate key locally inside Core Rail DB
+    const result = await railDb.execute({
+      sql: `SELECT * FROM synced_api_keys WHERE key_hash = ? AND status = 'active'`,
       args: [keyHash],
     });
 

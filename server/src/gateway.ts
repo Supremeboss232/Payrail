@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { db } from './db';
+import { railDb } from './db';
 import { postTransaction, LedgerEntryInput } from './ledger';
 import { dispatchWebhookEvent } from './webhooks';
 import { buildPacs008, buildPacs009 } from './b2b';
@@ -55,7 +55,7 @@ router.post('/payment_intents', async (req: Request, res: Response) => {
 
   try {
     // Validate destination account
-    const accResult = await db.execute({
+    const accResult = await railDb.execute({
       sql: 'SELECT id FROM accounts WHERE id = ?',
       args: [destination_account_id],
     });
@@ -65,7 +65,7 @@ router.post('/payment_intents', async (req: Request, res: Response) => {
       return;
     }
 
-    await db.execute({
+    await railDb.execute({
       sql: `INSERT INTO payment_intents (id, amount, currency, status, funding_source_id, destination_account_id, client_secret, metadata, created_at)
             VALUES (?, ?, ?, 'requires_payment_method', NULL, ?, ?, ?, ?)`,
       args: [id, amount, currency.toUpperCase(), destination_account_id, clientSecret, JSON.stringify(metadata), createdAt],
@@ -103,7 +103,7 @@ router.post('/payment_intents/:id/confirm', async (req: Request, res: Response) 
 
   try {
     // 1. Fetch Payment Intent
-    const piResult = await db.execute({
+    const piResult = await railDb.execute({
       sql: 'SELECT * FROM payment_intents WHERE id = ?',
       args: [id],
     });
@@ -127,7 +127,7 @@ router.post('/payment_intents/:id/confirm', async (req: Request, res: Response) 
     // 2. Resolve Active Funding Sources (ordered by priority)
     let fundingSources: FundingSource[] = [];
     if (funding_source_id) {
-      const fsResult = await db.execute({
+      const fsResult = await railDb.execute({
         sql: "SELECT * FROM funding_sources WHERE id = ? AND status = 'active'",
         args: [funding_source_id],
       });
@@ -137,7 +137,7 @@ router.post('/payment_intents/:id/confirm', async (req: Request, res: Response) 
       }
       fundingSources = [fsResult.rows[0] as unknown as FundingSource];
     } else {
-      const fsResult = await db.execute({
+      const fsResult = await railDb.execute({
         sql: "SELECT * FROM funding_sources WHERE status = 'active' ORDER BY priority ASC",
         args: [],
       });
@@ -150,7 +150,7 @@ router.post('/payment_intents/:id/confirm', async (req: Request, res: Response) 
     }
 
     // Update payment intent status to processing
-    await db.execute({
+    await railDb.execute({
       sql: "UPDATE payment_intents SET status = 'processing' WHERE id = ?",
       args: [id],
     });
@@ -165,7 +165,7 @@ router.post('/payment_intents/:id/confirm', async (req: Request, res: Response) 
 
       try {
         // Fetch ledger account representing this funding source
-        const accResult = await db.execute({
+        const accResult = await railDb.execute({
           sql: 'SELECT * FROM accounts WHERE id = ?',
           args: [fs.account_id],
         });
@@ -228,7 +228,7 @@ router.post('/payment_intents/:id/confirm', async (req: Request, res: Response) 
 
     // 4. Update Payment Intent based on outcome
     if (successfulFs) {
-      await db.execute({
+      await railDb.execute({
         sql: "UPDATE payment_intents SET status = 'succeeded', funding_source_id = ? WHERE id = ?",
         args: [successfulFs.id, id],
       });
@@ -257,7 +257,7 @@ router.post('/payment_intents/:id/confirm', async (req: Request, res: Response) 
         pacs_008_xml: pacs008Xml
       });
     } else {
-      await db.execute({
+      await railDb.execute({
         sql: "UPDATE payment_intents SET status = 'failed' WHERE id = ?",
         args: [id],
       });
@@ -307,7 +307,7 @@ router.post('/funding_sources', async (req: Request, res: Response) => {
 
   try {
     // Validate ledger account exists
-    const accResult = await db.execute({
+    const accResult = await railDb.execute({
       sql: 'SELECT id FROM accounts WHERE id = ?',
       args: [account_id],
     });
@@ -317,7 +317,7 @@ router.post('/funding_sources', async (req: Request, res: Response) => {
       return;
     }
 
-    await db.execute({
+    await railDb.execute({
       sql: `INSERT INTO funding_sources (id, name, type, account_id, priority, status, created_at)
             VALUES (?, ?, ?, ?, ?, 'active', ?)`,
       args: [id, name, type, account_id, priority, createdAt],
@@ -349,7 +349,7 @@ router.patch('/funding_sources/:id/swap', async (req: Request, res: Response) =>
   const { priority, status } = req.body;
 
   try {
-    const fsResult = await db.execute({
+    const fsResult = await railDb.execute({
       sql: 'SELECT * FROM funding_sources WHERE id = ?',
       args: [id],
     });
@@ -360,7 +360,7 @@ router.patch('/funding_sources/:id/swap', async (req: Request, res: Response) =>
     }
 
     if (priority !== undefined) {
-      await db.execute({
+      await railDb.execute({
         sql: 'UPDATE funding_sources SET priority = ? WHERE id = ?',
         args: [priority, id],
       });
@@ -371,13 +371,13 @@ router.patch('/funding_sources/:id/swap', async (req: Request, res: Response) =>
         res.status(400).json({ error: "status must be 'active' or 'inactive'." });
         return;
       }
-      await db.execute({
+      await railDb.execute({
         sql: 'UPDATE funding_sources SET status = ? WHERE id = ?',
         args: [status, id],
       });
     }
 
-    const updatedResult = await db.execute({
+    const updatedResult = await railDb.execute({
       sql: 'SELECT * FROM funding_sources WHERE id = ?',
       args: [id],
     });
@@ -395,7 +395,7 @@ router.patch('/funding_sources/:id/swap', async (req: Request, res: Response) =>
  */
 router.get('/funding_sources', async (req: Request, res: Response) => {
   try {
-    const result = await db.execute('SELECT * FROM funding_sources ORDER BY priority ASC');
+    const result = await railDb.execute('SELECT * FROM funding_sources ORDER BY priority ASC');
     res.status(200).json(result.rows);
   } catch (error) {
     res.status(500).json({ error: 'Failed to retrieve funding sources.' });
@@ -414,7 +414,7 @@ router.post('/tenants', async (req: Request, res: Response) => {
   }
   const createdAt = new Date().toISOString();
   try {
-    await db.execute({
+    await railDb.execute({
       sql: `INSERT INTO tenants (id, legal_name, routing_code, api_status, public_key_pem, created_at)
             VALUES (?, ?, ?, 'active', ?, ?)`,
       args: [id, legal_name, routing_code, public_key_pem, createdAt]
@@ -438,11 +438,11 @@ router.post('/settlements/dns_sweep', async (req: Request, res: Response) => {
   }
 
   try {
-    const sourceAccResult = await db.execute({
+    const sourceAccResult = await railDb.execute({
       sql: 'SELECT id FROM accounts WHERE tenant_id = (SELECT id FROM tenants WHERE routing_code = ?)',
       args: [source_bic]
     });
-    const destAccResult = await db.execute({
+    const destAccResult = await railDb.execute({
       sql: 'SELECT id FROM accounts WHERE tenant_id = (SELECT id FROM tenants WHERE routing_code = ?)',
       args: [dest_bic]
     });

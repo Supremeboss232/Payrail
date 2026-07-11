@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import * as crypto from 'crypto';
-import { db } from './db';
+import { railDb } from './db';
 
 // Extend Request interface to include tenant details
 declare global {
@@ -32,7 +32,7 @@ export async function authenticateB2BRequest(req: Request, res: Response, next: 
 
   try {
     // 1. Fetch Tenant details and public key
-    const tenantResult = await db.execute({
+    const tenantResult = await railDb.execute({
       sql: 'SELECT * FROM tenants WHERE id = ? AND api_status = \'active\'',
       args: [tenantId]
     });
@@ -99,7 +99,7 @@ export async function authenticateB2BRequest(req: Request, res: Response, next: 
 export async function generateMerkleHash(txId: string, description: string, referenceId: string, paymentIntentId: string): Promise<string> {
   try {
     // 1. Fetch the latest transaction hash
-    const lastTxResult = await db.execute('SELECT merkle_hash FROM transactions WHERE merkle_hash IS NOT NULL ORDER BY created_at DESC LIMIT 1');
+    const lastTxResult = await railDb.execute('SELECT merkle_hash FROM transactions WHERE merkle_hash IS NOT NULL ORDER BY created_at DESC LIMIT 1');
     
     let previousHash = '0000000000000000000000000000000000000000000000000000000000000000'; // Genesis Hash Seed
     if (lastTxResult.rows.length > 0) {

@@ -3,7 +3,7 @@ import cors from 'cors';
 import * as dotenv from 'dotenv';
 import * as crypto from 'crypto';
 import * as path from 'path';
-import { initDb, db } from './db';
+import { initDb, vaultDb, railDb } from './db';
 import { createAccount, getAccounts, getTransactions, getTransactionEntries, getAccountHistory, postTransaction } from './ledger';
 import { authenticateApiKey, authenticateGateway, getApiKeys, revokeApiKey, generateApiKey } from './auth';
 import { getWebhookEndpoints, createWebhookEndpoint, deleteWebhookEndpoint, getWebhookLogs } from './webhooks';
@@ -70,7 +70,7 @@ app.get('/console/transactions', async (req, res) => {
 
 app.get('/console/funding_sources', async (req, res) => {
   try {
-    const result = await db.execute('SELECT * FROM funding_sources ORDER BY priority ASC');
+    const result = await railDb.execute('SELECT * FROM funding_sources ORDER BY priority ASC');
     res.status(200).json(result.rows);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -86,7 +86,7 @@ app.post('/console/funding_sources', async (req, res) => {
   const id = `fs_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
   const createdAt = new Date().toISOString();
   try {
-    const accResult = await db.execute({
+    const accResult = await railDb.execute({
       sql: 'SELECT id FROM accounts WHERE id = ?',
       args: [account_id],
     });
@@ -94,7 +94,7 @@ app.post('/console/funding_sources', async (req, res) => {
       res.status(400).json({ error: `Account ${account_id} not found.` });
       return;
     }
-    await db.execute({
+    await railDb.execute({
       sql: `INSERT INTO funding_sources (id, name, type, account_id, priority, status, created_at)
             VALUES (?, ?, ?, ?, ?, 'active', ?)`,
       args: [id, name, type, account_id, priority, createdAt],
@@ -110,18 +110,18 @@ app.patch('/console/funding_sources/:id/swap', async (req, res) => {
   const { priority, status } = req.body;
   try {
     if (priority !== undefined) {
-      await db.execute({
+      await railDb.execute({
         sql: 'UPDATE funding_sources SET priority = ? WHERE id = ?',
         args: [priority, id],
       });
     }
     if (status !== undefined) {
-      await db.execute({
+      await railDb.execute({
         sql: 'UPDATE funding_sources SET status = ? WHERE id = ?',
         args: [status, id],
       });
     }
-    const updated = await db.execute({
+    const updated = await railDb.execute({
       sql: 'SELECT * FROM funding_sources WHERE id = ?',
       args: [id],
     });
@@ -201,7 +201,7 @@ app.post('/console/seed_funds', async (req, res) => {
   const { accountId, amount, currency } = req.body;
   try {
     const systemEquity = `acc_system_equity_${currency.toLowerCase()}`;
-    await db.execute({
+    await railDb.execute({
       sql: `INSERT OR IGNORE INTO accounts (id, name, type, category, currency, balance, status, created_at)
             VALUES (?, ?, 'equity', 'equity', ?, 0, 'active', ?)`,
       args: [systemEquity, `System Capital Equity (${currency.toUpperCase()})`, currency.toUpperCase(), new Date().toISOString()],
@@ -227,7 +227,7 @@ app.post('/console/simulate_logistics_invoice', async (req, res) => {
   try {
     // Expense increases (debit), Accounts Payable increases (credit)
     const expenseAccount = 'acc_expense_logistics';
-    await db.execute({
+    await railDb.execute({
       sql: `INSERT OR IGNORE INTO accounts (id, name, type, category, currency, balance, status, created_at)
             VALUES (?, 'Logistics Costs Expense', 'expense', 'logistics', 'USD', 0, 'active', ?)`,
       args: [expenseAccount, new Date().toISOString()],
@@ -286,7 +286,7 @@ app.get('*', (req, res) => {
 
 // Seeding function
 export async function seedDatabase() {
-  const accountCount = await db.execute('SELECT COUNT(*) as count FROM accounts');
+  const accountCount = await railDb.execute('SELECT COUNT(*) as count FROM accounts');
   const count = (accountCount.rows[0] as any).count;
 
   if (count > 0) {
@@ -303,8 +303,15 @@ export async function seedDatabase() {
   // Seed a default developer API key so the API playground works out of the box
   const rawDevKey = 'sk_live_dev_key_12345';
   const hashedDevKey = crypto.createHash('sha256').update(rawDevKey).digest('hex');
-  await db.execute({
-    sql: `INSERT INTO api_keys (id, key_hash, prefix, name, status, created_at)
+  
+  await vaultDb.execute({
+    sql: `INSERT OR IGNORE INTO api_keys (id, key_hash, prefix, name, status, created_at)
+          VALUES ('key_default_dev', ?, 'sk_live_', 'Default Developer Key', 'active', ?)`,
+    args: [hashedDevKey, new Date().toISOString()],
+  });
+
+  await railDb.execute({
+    sql: `INSERT OR IGNORE INTO synced_api_keys (id, key_hash, prefix, name, status, created_at)
           VALUES ('key_default_dev', ?, 'sk_live_', 'Default Developer Key', 'active', ?)`,
     args: [hashedDevKey, new Date().toISOString()],
   });

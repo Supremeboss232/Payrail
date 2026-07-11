@@ -1,6 +1,6 @@
 import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
-import { db } from './db';
+import { vaultDb } from './db';
 
 export interface WebhookEndpoint {
   id: string;
@@ -30,7 +30,7 @@ export async function createWebhookEndpoint(url: string, events: string[]): Prom
   const createdAt = new Date().toISOString();
   const eventsJson = JSON.stringify(events);
 
-  await db.execute({
+  await vaultDb.execute({
     sql: `INSERT INTO webhook_endpoints (id, url, secret, events, status, created_at)
           VALUES (?, ?, ?, ?, 'active', ?)`,
     args: [id, url, secret, eventsJson, createdAt],
@@ -50,7 +50,7 @@ export async function createWebhookEndpoint(url: string, events: string[]): Prom
  * Gets webhook endpoints
  */
 export async function getWebhookEndpoints(): Promise<WebhookEndpoint[]> {
-  const result = await db.execute('SELECT * FROM webhook_endpoints ORDER BY created_at DESC');
+  const result = await vaultDb.execute('SELECT * FROM webhook_endpoints ORDER BY created_at DESC');
   return result.rows as unknown as WebhookEndpoint[];
 }
 
@@ -58,7 +58,7 @@ export async function getWebhookEndpoints(): Promise<WebhookEndpoint[]> {
  * Deletes a webhook endpoint
  */
 export async function deleteWebhookEndpoint(id: string): Promise<void> {
-  await db.execute({
+  await vaultDb.execute({
     sql: 'DELETE FROM webhook_endpoints WHERE id = ?',
     args: [id],
   });
@@ -68,7 +68,7 @@ export async function deleteWebhookEndpoint(id: string): Promise<void> {
  * Retrieves delivery logs for webhooks
  */
 export async function getWebhookLogs(): Promise<WebhookLog[]> {
-  const result = await db.execute('SELECT * FROM webhook_delivery_logs ORDER BY delivered_at DESC LIMIT 100');
+  const result = await vaultDb.execute('SELECT * FROM webhook_delivery_logs ORDER BY delivered_at DESC LIMIT 100');
   return result.rows as unknown as WebhookLog[];
 }
 
@@ -140,7 +140,7 @@ async function attemptDelivery(ep: WebhookEndpoint, payloadStr: string, eventTyp
 
   // Log webhook delivery attempt
   const logId = `wl_${uuidv4().replace(/-/g, '').slice(0, 16)}`;
-  await db.execute({
+  await vaultDb.execute({
     sql: `INSERT INTO webhook_delivery_logs (id, endpoint_id, event_type, payload, response_status, response_body, delivered_at)
           VALUES (?, ?, ?, ?, ?, ?, ?)`,
     args: [

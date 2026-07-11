@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { db } from './db';
+import { railDb } from './db';
 import { generateMerkleHash } from './b2b';
 
 export interface LedgerEntryInput {
@@ -55,7 +55,7 @@ export async function createAccount(
   
   // If initialBalance > 0, we'll create a seeding transaction to keep the double-entry ledger balanced.
   // We offset it against a system equity account: `acc_system_equity`
-  await db.execute({
+  await railDb.execute({
     sql: `INSERT OR IGNORE INTO accounts (id, name, type, category, currency, balance, status, created_at)
           VALUES (?, ?, ?, ?, ?, ?, 'active', ?)`,
     args: [id, name, type, category, currency.toUpperCase(), 0, createdAt],
@@ -64,7 +64,7 @@ export async function createAccount(
   if (initialBalance > 0) {
     const equityId = `acc_system_equity_${currency.toLowerCase()}`;
     // Ensure system equity account exists
-    await db.execute({
+    await railDb.execute({
       sql: `INSERT OR IGNORE INTO accounts (id, name, type, category, currency, balance, status, created_at)
             VALUES (?, ?, 'equity', 'equity', ?, 0, 'active', ?)`,
       args: [equityId, `System Capital Equity (${currency.toUpperCase()})`, currency.toUpperCase(), createdAt],
@@ -97,7 +97,7 @@ export async function createAccount(
     );
   }
 
-  const result = await db.execute({
+  const result = await railDb.execute({
     sql: 'SELECT * FROM accounts WHERE id = ?',
     args: [id],
   });
@@ -148,7 +148,7 @@ export async function postTransaction(
   const timestamp = new Date().toISOString();
 
   // Create LibSQL write transaction
-  const tx = await db.transaction('write');
+  const tx = await railDb.transaction('write');
 
   try {
     // 2. Fetch and validate accounts involved, verifying status and currencies
@@ -235,7 +235,7 @@ export async function postTransaction(
   }
 
   // Fetch created transaction
-  const result = await db.execute({
+  const result = await railDb.execute({
     sql: 'SELECT * FROM transactions WHERE id = ?',
     args: [txId],
   });
@@ -247,7 +247,7 @@ export async function postTransaction(
  * Retrieves all accounts and their current balances
  */
 export async function getAccounts(): Promise<Account[]> {
-  const result = await db.execute('SELECT * FROM accounts ORDER BY type, name');
+  const result = await railDb.execute('SELECT * FROM accounts ORDER BY type, name');
   return result.rows as unknown as Account[];
 }
 
@@ -255,7 +255,7 @@ export async function getAccounts(): Promise<Account[]> {
  * Retrieves the transaction journal (newest first)
  */
 export async function getTransactions(): Promise<Transaction[]> {
-  const result = await db.execute('SELECT * FROM transactions ORDER BY created_at DESC');
+  const result = await railDb.execute('SELECT * FROM transactions ORDER BY created_at DESC');
   return result.rows as unknown as Transaction[];
 }
 
@@ -263,7 +263,7 @@ export async function getTransactions(): Promise<Transaction[]> {
  * Gets all entries associated with a transaction
  */
 export async function getTransactionEntries(transactionId: string): Promise<LedgerEntry[]> {
-  const result = await db.execute({
+  const result = await railDb.execute({
     sql: 'SELECT * FROM entries WHERE transaction_id = ? ORDER BY type DESC',
     args: [transactionId],
   });
@@ -274,7 +274,7 @@ export async function getTransactionEntries(transactionId: string): Promise<Ledg
  * Gets entry history for a specific account
  */
 export async function getAccountHistory(accountId: string): Promise<any[]> {
-  const result = await db.execute({
+  const result = await railDb.execute({
     sql: `
       SELECT e.id, e.type, e.amount, e.currency, e.created_at, t.description, t.id as transaction_id
       FROM entries e
