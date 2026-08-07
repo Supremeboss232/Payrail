@@ -1,11 +1,14 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { railDb } from './db';
-import { postTransaction, LedgerEntryInput } from './ledger';
+import { railDb, systemTenantId, createNotification } from './db';
+import { postTransaction, LedgerEntryInput, createAccount } from './ledger';
 import { dispatchWebhookEvent } from './webhooks';
 import { buildPacs008, buildPacs009 } from './b2b';
+import { decryptCredentials, encryptCredentials } from './crypto';
+import { executeHttpCallback, executeWeb3RpcTransfer, executeSimulation } from './integrations';
 
 const router = Router();
+const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'payment-rail-master-default-key-12345';
 
 export interface PaymentIntent {
   id: string;
@@ -161,7 +164,8 @@ router.post('/payment_intents/:id/confirm', async (req: Request, res: Response) 
     const swapLogs: string[] = [];
 
     for (const fs of fundingSources) {
-      swapLogs.push(`Attempting payment using funding source: ${fs.name} (${fs.type}).`);
+      const connType = (fs as any).connector_type || 'simulation';
+      swapLogs.push(`Attempting payment using funding source: ${fs.name} (connector: ${connType}).`);
 
       try {
         // Fetch ledger account representing this funding source
@@ -176,19 +180,48 @@ router.post('/payment_intents/:id/confirm', async (req: Request, res: Response) 
 
         const sourceAcc = accResult.rows[0] as any;
 
-        // Perform balance check. If Asset, we ensure it has sufficient balance to be debited
-        // We simulate a transaction failure if balance is too low
-        if (sourceAcc.balance < pi.amount) {
+        // Perform balance check
+        if (Number(sourceAcc.balance) < Number(pi.amount)) {
           throw new Error(`Insufficient funds: ${sourceAcc.name} has balance of ${sourceAcc.balance} cents, payment requires ${pi.amount} cents.`);
         }
 
-        // Post ledger entries atomically
-        // Debit: Merchant Destination Account (Asset or Wallet increases)
-        // Credit: Funding Source Account (Asset decreases / liability increases)
-        // Wait, let's map:
-        // Double entry: Debit Destination, Credit Source
-        // For Assets: Credit reduces balance (Source account balance goes down). Debit increases balance (Merchant Destination balance goes up).
-        const entries: LedgerEntryInput[] = [
+        // 1. Dispatch dynamic outbound transfer to external API
+        let transactionReference = '';
+        if (connType === 'simulation') {
+          transactionReference = await executeSimulation(pi.amount, pi.currency);
+        } else {
+          const encCreds = (fs as any).credentials_encrypted;
+          if (!encCreds) {
+            throw new Error(`Integration configuration credentials not registered for funding source ${fs.name}.`);
+          }
+          const decryptedConfig = decryptCredentials(encCreds, ENCRYPTION_KEY);
+
+          if (connType === 'http_callback') {
+            transactionReference = await executeHttpCallback(decryptedConfig, pi.amount, pi.currency, pi.destination_account_id);
+          } else if (connType === 'web3_rpc') {
+            transactionReference = await executeWeb3RpcTransfer(decryptedConfig, pi.amount, pi.currency);
+          } else {
+            throw new Error(`Invalid connector_type: ${connType}`);
+          }
+        }
+
+        // 2. Post double-entry ledger entries (Only if API transfer was successful!)
+        // To support Nile's multi-tenant isolation, we split B2B cross-tenant settlement into isolated ledger legs.
+        const fsTenantId = (fs as any).tenant_id || (sourceAcc as any).tenant_id || systemTenantId;
+
+        // Platform Core Leg (System Tenant)
+        const offsetSystemAccountId = `acc_offset_${fs.id}`;
+        await createAccount(
+          offsetSystemAccountId,
+          `Clearing Offset for ${fs.name}`,
+          'liability',
+          'bank',
+          pi.currency,
+          0,
+          systemTenantId
+        );
+
+        const platformEntries: LedgerEntryInput[] = [
           {
             accountId: pi.destination_account_id,
             type: 'debit',
@@ -196,28 +229,65 @@ router.post('/payment_intents/:id/confirm', async (req: Request, res: Response) 
             currency: pi.currency,
           },
           {
-            accountId: fs.account_id,
+            accountId: offsetSystemAccountId,
             type: 'credit',
             amount: pi.amount,
             currency: pi.currency,
           },
         ];
 
-        const tenantId = (req as any).tenant ? (req as any).tenant.id : null;
-
         await postTransaction(
-          `Payment Intent confirm: ${pi.id} via ${fs.name}`,
+          `Payment platform leg: ${pi.id} via ${fs.name} (Ref: ${transactionReference})`,
           'api',
-          entries,
+          platformEntries,
           pi.id,
           pi.id,
-          tenantId
+          systemTenantId
         );
 
+        // Partner Bank Leg (Bank Tenant)
+        if (fsTenantId && fsTenantId !== systemTenantId) {
+          const offsetBankAccountId = `acc_offset_system`;
+          await createAccount(
+            offsetBankAccountId,
+            'System Clearing Offset',
+            'liability',
+            'bank',
+            pi.currency,
+            0,
+            fsTenantId
+          );
+
+          const bankEntries: LedgerEntryInput[] = [
+            {
+              accountId: offsetBankAccountId,
+              type: 'debit',
+              amount: pi.amount,
+              currency: pi.currency,
+            },
+            {
+              accountId: fs.account_id,
+              type: 'credit',
+              amount: pi.amount,
+              currency: pi.currency,
+            },
+          ];
+
+          await postTransaction(
+            `Payment partner bank leg: ${pi.id} via ${fs.name} (Ref: ${transactionReference})`,
+            'api',
+            bankEntries,
+            pi.id,
+            pi.id,
+            fsTenantId
+          );
+        }
+
         successfulFs = fs;
-        swapLogs.push(`Payment succeeded via ${fs.name}.`);
+        swapLogs.push(`Payment succeeded via ${fs.name}. Reference: ${transactionReference}`);
         break; // Stop loop since it succeeded!
       } catch (err: any) {
+        console.error('Confirm error stack:', err);
         const errorMsg = err.message || 'Unknown processing error';
         console.warn(`Funding source ${fs.name} failed: ${errorMsg}`);
         swapLogs.push(`Swap Triggered: ${fs.name} failed (${errorMsg}).`);
@@ -244,6 +314,25 @@ router.post('/payment_intents/:id/confirm', async (req: Request, res: Response) 
         payment_intent: updatedPi,
         logs: swapLogs,
       });
+
+      // Trigger Notification for Member Bank
+      const fsTenantId = (successfulFs as any).tenant_id;
+      if (fsTenantId && fsTenantId !== systemTenantId) {
+        await createNotification(
+          fsTenantId,
+          'Payment Intent Succeeded',
+          `B2B transfer of $${(updatedPi.amount / 100).toFixed(2)} ${updatedPi.currency} cleared via ${successfulFs.name}.`,
+          'success'
+        );
+      }
+      
+      // Trigger Notification for Clearinghouse Administrator
+      await createNotification(
+        systemTenantId,
+        'Payment Intent Settled',
+        `Transaction ${id} settled on ledger for $${(updatedPi.amount / 100).toFixed(2)} ${updatedPi.currency}.`,
+        'success'
+      );
 
       // Build ISO 20022 pacs.008 XML payload
       const sourceBic = (req as any).tenant ? (req as any).tenant.routing_code : 'SYSTEM_BIC';
@@ -274,6 +363,15 @@ router.post('/payment_intents/:id/confirm', async (req: Request, res: Response) 
         logs: swapLogs,
       });
 
+      // Trigger Notification for Clearinghouse Admin and relevant tenant if present
+      const activeTenant = (req as any).tenant?.id || systemTenantId;
+      await createNotification(
+        activeTenant,
+        'Payment Intent Failed',
+        `Transaction ${id} failed confirmation: ${failureReason || 'unknown processing error'}.`,
+        'error'
+      );
+
       res.status(402).json({
         success: false,
         error: {
@@ -295,7 +393,7 @@ router.post('/payment_intents/:id/confirm', async (req: Request, res: Response) 
  * Creates a new funding source for routing
  */
 router.post('/funding_sources', async (req: Request, res: Response) => {
-  const { name, type, account_id, priority = 0 } = req.body;
+  const { name, type, account_id, priority = 0, connector_type = 'simulation' } = req.body;
 
   if (!name || !type || !account_id) {
     res.status(400).json({ error: 'name, type, and account_id are required.' });
@@ -318,9 +416,9 @@ router.post('/funding_sources', async (req: Request, res: Response) => {
     }
 
     await railDb.execute({
-      sql: `INSERT INTO funding_sources (id, name, type, account_id, priority, status, created_at)
-            VALUES (?, ?, ?, ?, ?, 'active', ?)`,
-      args: [id, name, type, account_id, priority, createdAt],
+      sql: `INSERT INTO funding_sources (id, name, type, account_id, priority, status, connector_type, created_at)
+            VALUES (?, ?, ?, ?, ?, 'active', ?, ?)`,
+      args: [id, name, type, account_id, priority, connector_type, createdAt],
     });
 
     const fs: FundingSource = {
@@ -408,18 +506,40 @@ router.get('/funding_sources', async (req: Request, res: Response) => {
  */
 router.post('/tenants', async (req: Request, res: Response) => {
   const { id, legal_name, routing_code, public_key_pem } = req.body;
-  if (!id || !legal_name || !routing_code || !public_key_pem) {
-    res.status(400).json({ error: 'id, legal_name, routing_code, and public_key_pem are required.' });
+  if (!legal_name || !routing_code || !public_key_pem) {
+    res.status(400).json({ error: 'legal_name, routing_code, and public_key_pem are required.' });
     return;
   }
   const createdAt = new Date().toISOString();
   try {
-    await railDb.execute({
-      sql: `INSERT INTO tenants (id, legal_name, routing_code, api_status, public_key_pem, created_at)
-            VALUES (?, ?, ?, 'active', ?, ?)`,
-      args: [id, legal_name, routing_code, public_key_pem, createdAt]
-    });
-    res.status(201).json({ id, legal_name, routing_code, status: 'active', created_at: createdAt });
+    let tenantId = id;
+    if (railDb.isPostgres) {
+      if (tenantId) {
+        await railDb.execute({
+          sql: `INSERT INTO tenants (id, legal_name, routing_code, api_status, public_key_pem, created_at)
+                VALUES (?, ?, ?, 'active', ?, ?)`,
+          args: [tenantId, legal_name, routing_code, public_key_pem, createdAt]
+        });
+      } else {
+        const resObj = await railDb.execute({
+          sql: `INSERT INTO tenants (name, legal_name, routing_code, api_status, public_key_pem, created_at)
+                VALUES (?, ?, ?, 'active', ?, ?)
+                RETURNING id`,
+          args: [legal_name, legal_name, routing_code, public_key_pem, createdAt]
+        });
+        tenantId = (resObj.rows[0] as any).id;
+      }
+    } else {
+      if (!tenantId) {
+        tenantId = uuidv4();
+      }
+      await railDb.execute({
+        sql: `INSERT INTO tenants (id, legal_name, routing_code, api_status, public_key_pem, created_at)
+              VALUES (?, ?, ?, 'active', ?, ?)`,
+        args: [tenantId, legal_name, routing_code, public_key_pem, createdAt]
+      });
+    }
+    res.status(201).json({ id: tenantId, legal_name, routing_code, status: 'active', created_at: createdAt });
   } catch (error: any) {
     console.error('Create Tenant Error:', error);
     res.status(500).json({ error: error.message });
@@ -431,55 +551,257 @@ router.post('/tenants', async (req: Request, res: Response) => {
  * Executes a Deferred Net Settlement (DNS) sweep between two routing BICs
  */
 router.post('/settlements/dns_sweep', async (req: Request, res: Response) => {
-  const { source_bic, dest_bic, amount, currency } = req.body;
+  let { source_bic, dest_bic, amount, currency } = req.body;
+
+  // Auto-detect BICs and amount from registered member banks
   if (!source_bic || !dest_bic || !amount || !currency) {
-    res.status(400).json({ error: 'source_bic, dest_bic, amount, and currency are required.' });
-    return;
+    try {
+      const tenantsRes = await railDb.execute(
+        "SELECT id, routing_code FROM tenants WHERE routing_code != 'PAYRAIL_SYSTEM_BIC' ORDER BY created_at ASC"
+      );
+
+      if (tenantsRes.rows.length < 2) {
+        res.status(400).json({
+          error: 'Not enough registered banks. Connect at least 2 member banks via the Bank Connection Wizard before running a net settlement sweep.'
+        });
+        return;
+      }
+
+      const tenantA = tenantsRes.rows[0] as any;
+      const tenantB = tenantsRes.rows[1] as any;
+      source_bic = tenantA.routing_code;
+      dest_bic = tenantB.routing_code;
+      currency = 'USD';
+
+      // Use the last confirmed payment intent amount, or fall back to $1,000
+      amount = 100000;
+      const latestPi = await railDb.execute(
+        "SELECT amount, currency FROM payment_intents WHERE status = 'confirmed' ORDER BY created_at DESC LIMIT 1"
+      );
+      if (latestPi.rows.length > 0) {
+        amount = Number((latestPi.rows[0] as any).amount);
+        currency = (latestPi.rows[0] as any).currency || 'USD';
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: `Auto-detection query error: ${e.message}` });
+      return;
+    }
   }
 
   try {
-    const sourceAccResult = await railDb.execute({
-      sql: 'SELECT id FROM accounts WHERE tenant_id = (SELECT id FROM tenants WHERE routing_code = ?)',
+    let sourceAccResult = await railDb.execute({
+      sql: 'SELECT id, tenant_id FROM accounts WHERE tenant_id = (SELECT id FROM tenants WHERE routing_code = ?)',
       args: [source_bic]
     });
-    const destAccResult = await railDb.execute({
-      sql: 'SELECT id FROM accounts WHERE tenant_id = (SELECT id FROM tenants WHERE routing_code = ?)',
+    let destAccResult = await railDb.execute({
+      sql: 'SELECT id, tenant_id FROM accounts WHERE tenant_id = (SELECT id FROM tenants WHERE routing_code = ?)',
       args: [dest_bic]
     });
 
     if (sourceAccResult.rows.length === 0 || destAccResult.rows.length === 0) {
-      res.status(400).json({ error: `Clearing accounts not found for routing BICs: ${source_bic} -> ${dest_bic}` });
+      res.status(400).json({
+        error: `No clearing account found for one or both BICs: ${source_bic} -> ${dest_bic}. Ensure both banks completed onboarding via the Bank Connection Wizard.`
+      });
       return;
     }
 
     const sourceAccountId = (sourceAccResult.rows[0] as any).id;
     const destAccountId = (destAccResult.rows[0] as any).id;
+    const tenantAId = (sourceAccResult.rows[0] as any).tenant_id;
+    const tenantBId = (destAccResult.rows[0] as any).tenant_id;
 
-    const entries: LedgerEntryInput[] = [
-      { accountId: destAccountId, type: 'debit', amount, currency: currency.toUpperCase() },
-      { accountId: sourceAccountId, type: 'credit', amount, currency: currency.toUpperCase() }
-    ];
-
-    const tx = await postTransaction(
-      `Deferred Net Settlement (DNS) Sweep: ${source_bic} -> ${dest_bic}`,
-      'system',
-      entries,
-      `dns_${Date.now()}`,
-      null,
-      null // System-level settlement transaction
+    // Ensure B's system offset account exists
+    await createAccount(
+      'acc_offset_system',
+      'System Clearing Offset',
+      'liability',
+      'bank',
+      currency,
+      0,
+      tenantBId
     );
 
-    const pacs009Xml = buildPacs009(tx.id, amount, currency.toUpperCase(), source_bic, dest_bic);
+    const bankBLeg: LedgerEntryInput[] = [
+      { accountId: destAccountId, type: 'debit', amount, currency: currency.toUpperCase() },
+      { accountId: 'acc_offset_system', type: 'credit', amount, currency: currency.toUpperCase() }
+    ];
+    const txB = await postTransaction(
+      `Deferred Net Settlement Sweep Leg (Debit): B2B Member ${dest_bic}`,
+      'system',
+      bankBLeg,
+      `dns_b_${Date.now()}`,
+      null,
+      tenantBId
+    );
+
+    // Ensure A's system offset account exists
+    await createAccount(
+      'acc_offset_system',
+      'System Clearing Offset',
+      'liability',
+      'bank',
+      currency,
+      0,
+      tenantAId
+    );
+
+    const bankALeg: LedgerEntryInput[] = [
+      { accountId: 'acc_offset_system', type: 'debit', amount, currency: currency.toUpperCase() },
+      { accountId: sourceAccountId, type: 'credit', amount, currency: currency.toUpperCase() }
+    ];
+    const txA = await postTransaction(
+      `Deferred Net Settlement Sweep Leg (Credit): B2B Member ${source_bic}`,
+      'system',
+      bankALeg,
+      `dns_a_${Date.now()}`,
+      null,
+      tenantAId
+    );
+
+    const pacs009Xml = buildPacs009(txA.id, amount, currency.toUpperCase(), source_bic, dest_bic);
+
+    // Trigger Notification for Bank A (Receiver of Sweep Credit)
+    await createNotification(
+      tenantAId,
+      'Net Settlement Sweep Cleared (Credit)',
+      `Cleared net settlement surplus of $${(amount / 100).toFixed(2)} ${currency.toUpperCase()} from ${dest_bic}.`,
+      'success'
+    );
+
+    // Trigger Notification for Bank B (Sender of Sweep Debit)
+    await createNotification(
+      tenantBId,
+      'Net Settlement Sweep Cleared (Debit)',
+      `Settled net settlement liability of $${(amount / 100).toFixed(2)} ${currency.toUpperCase()} to ${source_bic}.`,
+      'info'
+    );
+
+    // Trigger Notification for Clearinghouse Administrator
+    await createNotification(
+      systemTenantId,
+      'PACS.009 Net Sweep Completed',
+      `Net sweep of $${(amount / 100).toFixed(2)} ${currency.toUpperCase()} completed between ${dest_bic} and ${source_bic}.`,
+      'success'
+    );
 
     res.status(201).json({
       success: true,
-      transaction: tx,
+      transaction: txA,
       pacs_009_xml: pacs009Xml
     });
   } catch (error: any) {
     console.error('DNS Sweep Error:', error);
     res.status(500).json({ error: error.message });
   }
+});
+
+/**
+ * POST /v1/banks/test_connection
+ * Tests a connector configuration without committing any data.
+ * Used by the Bank Connection Wizard to validate live connectivity.
+ */
+router.post('/banks/test_connection', async (req: Request, res: Response) => {
+  const { connector_type, url, method, headers: reqHeaders, body_template } = req.body;
+
+  if (!connector_type) {
+    res.status(400).json({ error: 'connector_type is required.' });
+    return;
+  }
+
+  // Simulation mode always succeeds
+  if (connector_type === 'simulation') {
+    res.json({ ok: true, latency_ms: 0, message: 'Simulation connector is always reachable.' });
+    return;
+  }
+
+  if (connector_type === 'http_callback') {
+    if (!url) {
+      res.status(400).json({ error: 'url is required for http_callback connector.' });
+      return;
+    }
+    try {
+      const start = Date.now();
+      const testBody = { test: true, source: 'payrail_connection_test' };
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+
+      const response = await fetch(url, {
+        method: method || 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(reqHeaders || {})
+        },
+        body: JSON.stringify(body_template || testBody),
+        signal: controller.signal
+      });
+      clearTimeout(timeout);
+
+      const latency = Date.now() - start;
+      res.json({
+        ok: response.ok || response.status < 500,
+        http_status: response.status,
+        latency_ms: latency,
+        message: response.ok
+          ? `Endpoint reachable. HTTP ${response.status} in ${latency}ms.`
+          : `Endpoint returned HTTP ${response.status} in ${latency}ms. Verify your auth headers and URL.`
+      });
+    } catch (e: any) {
+      const isTimeout = e.name === 'AbortError';
+      res.json({
+        ok: false,
+        latency_ms: 8000,
+        message: isTimeout
+          ? 'Connection timed out after 8 seconds. Check the URL and network access.'
+          : `Connection failed: ${e.message}`
+      });
+    }
+    return;
+  }
+
+  if (connector_type === 'web3_rpc') {
+    if (!url) {
+      res.status(400).json({ error: 'url (RPC node URL) is required for web3_rpc connector.' });
+      return;
+    }
+    try {
+      const start = Date.now();
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_blockNumber', params: [], id: 1 }),
+        signal: controller.signal
+      });
+      clearTimeout(timeout);
+
+      const latency = Date.now() - start;
+      const data = await response.json();
+      const blockNumber = data?.result ? parseInt(data.result, 16) : null;
+
+      res.json({
+        ok: !!blockNumber,
+        latency_ms: latency,
+        block_number: blockNumber,
+        message: blockNumber
+          ? `RPC node reachable. Current block: ${blockNumber} (${latency}ms).`
+          : `RPC node responded but returned unexpected data. Check the node URL.`
+      });
+    } catch (e: any) {
+      const isTimeout = e.name === 'AbortError';
+      res.json({
+        ok: false,
+        latency_ms: 8000,
+        message: isTimeout
+          ? 'RPC node timed out after 8 seconds.'
+          : `RPC connection failed: ${e.message}`
+      });
+    }
+    return;
+  }
+
+  res.status(400).json({ error: `Unknown connector_type: ${connector_type}. Use simulation, http_callback, or web3_rpc.` });
 });
 
 export default router;

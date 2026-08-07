@@ -23,7 +23,7 @@ function hashKey(rawKey: string): string {
  * Generates a new live API key.
  * Stores in vaultDb and syncs metadata to railDb.synced_api_keys.
  */
-export async function generateApiKey(name: string): Promise<{ rawKey: string; key: ApiKey }> {
+export async function generateApiKey(name: string, tenantId: string | null = null): Promise<{ rawKey: string; key: ApiKey }> {
   const rawKeyBytes = crypto.randomBytes(24).toString('hex'); // 48 chars
   const prefix = 'sk_live_';
   const rawKey = `${prefix}${rawKeyBytes}`;
@@ -33,16 +33,16 @@ export async function generateApiKey(name: string): Promise<{ rawKey: string; ke
 
   // 1. Store API key in Vault Database
   await vaultDb.execute({
-    sql: `INSERT INTO api_keys (id, key_hash, prefix, name, status, created_at)
-          VALUES (?, ?, ?, ?, 'active', ?)`,
-    args: [id, keyHash, prefix, name, createdAt],
+    sql: `INSERT INTO api_keys (id, tenant_id, key_hash, prefix, name, status, created_at)
+          VALUES (?, ?, ?, ?, ?, 'active', ?)`,
+    args: [id, tenantId, keyHash, prefix, name, createdAt],
   });
 
   // 2. Sync Configuration Handshake to Core Rail Database
   await railDb.execute({
-    sql: `INSERT INTO synced_api_keys (id, key_hash, prefix, name, status, created_at)
-          VALUES (?, ?, ?, ?, 'active', ?)`,
-    args: [id, keyHash, prefix, name, createdAt],
+    sql: `INSERT INTO synced_api_keys (id, tenant_id, key_hash, prefix, name, status, created_at)
+          VALUES (?, ?, ?, ?, ?, 'active', ?)`,
+    args: [id, tenantId, keyHash, prefix, name, createdAt],
   });
 
   const key: ApiKey = {
@@ -78,7 +78,19 @@ export async function revokeApiKey(id: string): Promise<void> {
 /**
  * Retrieves all registered API keys from the Vault Database.
  */
-export async function getApiKeys(): Promise<Omit<ApiKey, 'key_hash'>[]> {
+export async function getApiKeys(tenantId?: string | null): Promise<Omit<ApiKey, 'key_hash'>[]> {
+  if (tenantId) {
+    const result = await vaultDb.execute({
+      sql: `
+        SELECT id, prefix, name, status, created_at
+        FROM api_keys
+        WHERE tenant_id = ?
+        ORDER BY created_at DESC
+      `,
+      args: [tenantId],
+    });
+    return result.rows as unknown as Omit<ApiKey, 'key_hash'>[];
+  }
   const result = await vaultDb.execute(`
     SELECT id, prefix, name, status, created_at
     FROM api_keys
@@ -156,4 +168,40 @@ export async function authenticateGateway(req: Request, res: Response, next: Nex
   } else {
     await authenticateApiKey(req, res, next);
   }
+}
+
+import { verifyJwt } from './auth_routes';
+
+declare global {
+  namespace Express {
+    interface Request {
+      user?: {
+        userId: string;
+        username: string;
+        tenantId: string | null;
+        role: 'admin' | 'member';
+        legalName: string;
+        routingCode: string;
+      };
+    }
+  }
+}
+
+export function authenticateJwt(req: Request, res: Response, next: NextFunction): void {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    res.status(401).json({ error: 'Authorization token required. Access Denied.' });
+    return;
+  }
+
+  const token = authHeader.substring(7).trim();
+  const payload = verifyJwt(token);
+
+  if (!payload) {
+    res.status(401).json({ error: 'Session expired or invalid token. Please log in again.' });
+    return;
+  }
+
+  req.user = payload;
+  next();
 }

@@ -1,4 +1,4 @@
-const BASE_URL = 'http://localhost:9500';
+const BASE_URL = 'http://127.0.0.95:9500';
 const API_KEY = 'sk_live_dev_key_12345';
 
 async function testLiveGateway() {

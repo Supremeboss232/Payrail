@@ -16,13 +16,31 @@ async function clearDb() {
     console.log('  ✓ Vault tables cleared.');
 
     console.log('Wiping Core Rail Database...');
-    await railDb.execute('DELETE FROM entries');
-    await railDb.execute('DELETE FROM transactions');
-    await railDb.execute('DELETE FROM payment_intents');
-    await railDb.execute('DELETE FROM funding_sources');
-    await railDb.execute('DELETE FROM accounts');
-    await railDb.execute('DELETE FROM tenants');
-    await railDb.execute('DELETE FROM synced_api_keys');
+    if (railDb.isPostgres) {
+      console.log('  Dropping Core Rail tables to reset schemas...');
+      await railDb.execute('DROP TABLE IF EXISTS entries');
+      await railDb.execute('DROP TABLE IF EXISTS transactions');
+      await railDb.execute('DROP TABLE IF EXISTS payment_intents');
+      await railDb.execute('DROP TABLE IF EXISTS funding_sources');
+      await railDb.execute('DROP TABLE IF EXISTS accounts');
+      await railDb.execute('DROP TABLE IF EXISTS synced_api_keys');
+      const tenantsRes = await railDb.execute('SELECT id FROM tenants');
+      for (const row of tenantsRes.rows) {
+        console.log(`  Deleting tenant: ${row.id}`);
+        await railDb.execute({ sql: 'DELETE FROM tenants WHERE id = ?', args: [row.id] });
+      }
+
+      console.log('  Re-initializing clean database schemas...');
+      await initDb();
+    } else {
+      await railDb.execute('DELETE FROM entries');
+      await railDb.execute('DELETE FROM transactions');
+      await railDb.execute('DELETE FROM payment_intents');
+      await railDb.execute('DELETE FROM funding_sources');
+      await railDb.execute('DELETE FROM accounts');
+      await railDb.execute('DELETE FROM tenants');
+      await railDb.execute('DELETE FROM synced_api_keys');
+    }
     console.log('  ✓ Core Rail tables cleared.');
 
     console.log('Seeding baseline defaults...');

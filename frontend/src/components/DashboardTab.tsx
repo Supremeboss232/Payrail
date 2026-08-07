@@ -27,25 +27,29 @@ interface Transaction {
 
 interface DashboardTabProps {
   refreshTrigger: number;
+  user?: any;
 }
 
-export default function DashboardTab({ refreshTrigger }: DashboardTabProps) {
+export default function DashboardTab({ refreshTrigger, user }: DashboardTabProps) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Forms
+  // Seeding Form
   const [seedAccount, setSeedAccount] = useState('');
   const [seedAmount, setSeedAmount] = useState('1000');
   const [seedCurrency, setSeedCurrency] = useState('USD');
 
-  const [invoiceProvider, setInvoiceProvider] = useState('');
-  const [invoiceAmount, setInvoiceAmount] = useState('2500');
-  const [invoiceDesc, setInvoiceDesc] = useState('DHL Shipping Container Invoice #1029');
+  // Pacs.008 B2B Transfer Form
+  const [b2bDestAccount, setB2bDestAccount] = useState('');
+  const [b2bAmount, setB2bAmount] = useState('500');
+  const [b2bPrivateKey, setB2bPrivateKey] = useState('');
+  const [b2bLoading, setB2bLoading] = useState(false);
+  const [pacs008Xml, setPacs008Xml] = useState<string | null>(null);
 
-  const [paymentProvider, setPaymentProvider] = useState('');
-  const [paymentBank, setPaymentBank] = useState('');
-  const [paymentAmount, setPaymentAmount] = useState('0');
+  // Sweep states
+  const [sweepLoading, setSweepLoading] = useState(false);
+  const [pacs009Xml, setPacs009Xml] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -59,19 +63,11 @@ export default function DashboardTab({ refreshTrigger }: DashboardTabProps) {
           const accData = await accsRes.json();
           const txData = await txsRes.json();
           setAccounts(accData);
-          setTransactions(txData.slice(0, 5)); // Show 5 most recent
+          setTransactions(txData.slice(0, 10)); // Show 10 most recent
 
           if (accData.length > 0) {
             setSeedAccount(accData[0].id);
-            const logisticsAccs = accData.filter((a: Account) => a.category === 'logistics');
-            if (logisticsAccs.length > 0) {
-              setInvoiceProvider(logisticsAccs[0].id);
-              setPaymentProvider(logisticsAccs[0].id);
-            }
-            const bankAccs = accData.filter((a: Account) => a.category === 'bank' || a.category === 'broker_cash');
-            if (bankAccs.length > 0) {
-              setPaymentBank(bankAccs[0].id);
-            }
+            setB2bDestAccount(accData[0].id);
           }
         }
       } catch (err) {
@@ -100,8 +96,7 @@ export default function DashboardTab({ refreshTrigger }: DashboardTabProps) {
       });
 
       if (res.ok) {
-        alert(`Successfully deposited $${seedAmount} into ${seedAccount}!`);
-        // Trigger page re-poll by hitting refresh trigger indirectly
+        alert(`Successfully injected $${seedAmount} into ${seedAccount}!`);
         window.location.reload();
       }
     } catch (err) {
@@ -109,58 +104,108 @@ export default function DashboardTab({ refreshTrigger }: DashboardTabProps) {
     }
   };
 
-  const handleInvoiceCreate = async (e: React.FormEvent) => {
+  const handleB2BTransfer = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!invoiceProvider || !invoiceAmount) return;
+    if (!b2bDestAccount || !b2bAmount || !b2bPrivateKey) {
+      alert('Destination Account, Amount, and Private Key PEM are required to simulate signed B2B transfers.');
+      return;
+    }
+
+    setB2bLoading(true);
+    setPacs008Xml(null);
 
     try {
-      const res = await fetch(`${API_BASE_URL}/console/simulate_logistics_invoice`, {
+      // 1. Create Payment Intent
+      const intentRes = await fetch(`${API_BASE_URL}/v1/payments/payment_intents`, {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer sk_live_dev_key_12345',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          amount: parseFloat(b2bAmount) * 100,
+          currency: 'USD',
+          destination_account_id: b2bDestAccount,
+        })
+      });
+
+      if (!intentRes.ok) {
+        const err = await intentRes.json();
+        throw new Error(err.error || 'Failed to create payment intent.');
+      }
+      
+      const intent = await intentRes.json();
+
+      // 2. Request signature
+      const signRes = await fetch(`${API_BASE_URL}/v1/auth/sign_payload`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          providerId: invoiceProvider,
-          amount: parseFloat(invoiceAmount) * 100,
-          description: invoiceDesc,
-        }),
+          privateKeyPem: b2bPrivateKey,
+          payload: {}
+        })
       });
 
-      if (res.ok) {
-        alert('Invoice created & ledger transaction posted!');
-        window.location.reload();
+      if (!signRes.ok) {
+        const err = await signRes.json();
+        throw new Error(err.error || 'Private Key PEM error.');
       }
-    } catch (err) {
-      console.error(err);
-    }
-  };
 
-  const handleInvoicePay = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!paymentProvider || !paymentBank || !paymentAmount) return;
+      const { timestamp, signature } = await signRes.json();
 
-    try {
-      const res = await fetch(`${API_BASE_URL}/console/pay_logistics_invoice`, {
+      // 3. Confirm B2B Transfer with headers
+      const confirmRes = await fetch(`${API_BASE_URL}/v1/payments/payment_intents/${intent.id}/confirm`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          providerId: paymentProvider,
-          bankAccountId: paymentBank,
-          amount: parseFloat(paymentAmount) * 100,
-        }),
+        headers: {
+          'Content-Type': 'application/json',
+          'Payrail-Tenant-Id': user?.tenant_id || '',
+          'Payrail-Signature': `t=${timestamp},v1=${signature}`
+        },
+        body: JSON.stringify({})
       });
 
-      if (res.ok) {
-        alert('Payment completed! AP liability cleared and ledger updated.');
-        window.location.reload();
-      } else {
-        const data = await res.json();
-        alert(`Failed to complete payment: ${data.error}`);
+      const confirmData = await confirmRes.json();
+      if (!confirmRes.ok) {
+        throw new Error(confirmData.error || 'B2B Confirmation rejected.');
       }
-    } catch (err) {
-      console.error(err);
+
+      if (confirmData.pacs_msg) {
+        setPacs008Xml(confirmData.pacs_msg);
+      }
+      alert('B2B PACS.008 customer credit transfer executed successfully!');
+    } catch (err: any) {
+      alert(`B2B Transfer Error: ${err.message}`);
+    } finally {
+      setB2bLoading(false);
     }
   };
 
-  // Calculations
+  const triggerNetSweep = async () => {
+    setSweepLoading(true);
+    setPacs009Xml(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/v1/settlements/dns_sweep`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('payrail_api_key') || 'sk_live_dev_key_12345'}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({})
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to trigger sweep.');
+
+      if (data.pacs_msg) {
+        setPacs009Xml(data.pacs_msg);
+      }
+      alert(`Deferred Net Settlement completed successfully! Cleared clearing accounts positions.`);
+    } catch (err: any) {
+      alert(`Net Sweep Error: ${err.message}`);
+    } finally {
+      setSweepLoading(false);
+    }
+  };
+
   const formatCurrency = (amountCents: number, currency: string) => {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
@@ -170,17 +215,19 @@ export default function DashboardTab({ refreshTrigger }: DashboardTabProps) {
 
   const totalAssets = accounts
     .filter(a => a.type === 'asset')
-    .reduce((sum, a) => sum + (a.currency === 'USD' ? a.balance : 0), 0); // Convert only USD for display simple aggregation
+    .reduce((sum, a) => sum + Number(a.balance), 0);
 
   const totalLiabilities = accounts
     .filter(a => a.type === 'liability')
-    .reduce((sum, a) => sum + (a.currency === 'USD' ? a.balance : 0), 0);
+    .reduce((sum, a) => sum + Number(a.balance), 0);
 
-  const netWorth = totalAssets - totalLiabilities;
+  const netTreasury = totalAssets - totalLiabilities;
 
   if (loading) {
     return <div style={{ color: 'var(--text-secondary)' }}>Gathering ledger analytics...</div>;
   }
+
+  const isMember = user?.role === 'member';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
@@ -188,35 +235,137 @@ export default function DashboardTab({ refreshTrigger }: DashboardTabProps) {
       {/* 3 KPI metric cards */}
       <div className="grid-3">
         <div className="glass-panel metric-card">
-          <span className="metric-label">Total System Assets (USD)</span>
+          <span className="metric-label">{isMember ? 'Clearing Shard Assets' : 'Total System Assets (USD)'}</span>
           <span className="metric-value">{formatCurrency(totalAssets, 'USD')}</span>
           <span className="metric-sub text-green">
-            <span>●</span> In bank & broker accounts
+            <span>●</span> {isMember ? 'Your liquid ledger reserves' : 'Across all sharded bank balances'}
           </span>
         </div>
 
         <div className="glass-panel metric-card">
-          <span className="metric-label">Logistics AP Liabilities (USD)</span>
-          <span className="metric-value">{formatCurrency(totalLiabilities, 'USD')}</span>
-          <span className="metric-sub text-red">
-            <span>●</span> Accounts Payable due
+          <span className="metric-label">{isMember ? 'Clearing Account BIC' : 'System Overhead Position'}</span>
+          <span className="metric-value" style={{ fontSize: isMember ? '26px' : '36px', fontFamily: isMember ? 'var(--font-mono)' : 'inherit' }}>
+            {isMember ? (user?.routingCode || 'NO_BIC') : formatCurrency(totalLiabilities, 'USD')}
+          </span>
+          <span className="metric-sub text-orange">
+            <span>●</span> {isMember ? 'Active Bank Identifier Code' : 'Clearing offset adjustments'}
           </span>
         </div>
 
         <div className="glass-panel metric-card">
-          <span className="metric-label">Net Treasury Valuation (USD)</span>
-          <span className="metric-value">{formatCurrency(netWorth, 'USD')}</span>
+          <span className="metric-label">{isMember ? 'Active B2B Channels' : 'Net Treasury Valuation'}</span>
+          <span className="metric-value">{isMember ? accounts.length : formatCurrency(netTreasury, 'USD')}</span>
           <span className="metric-sub text-green">
-            <span>📈</span> Liquid Assets - Liabilities
+            <span>📈</span> {isMember ? 'Operational ledger accounts' : 'Core clearing surplus'}
           </span>
         </div>
       </div>
 
       <div className="grid-main-aside">
         
-        {/* Left column: Quick Actions and simulations */}
+        {/* Left column: Quick Actions and B2B Simulations */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
           
+          {/* Member Bank Outbound B2B Transfer Simulator */}
+          {isMember ? (
+            <div className="glass-panel" style={{ border: '1px solid var(--secondary-glow)' }}>
+              <div className="badge" style={{ marginBottom: '12px' }}>INTERBANK PACS.008 CLEARING</div>
+              <h3 style={{ marginBottom: '8px', fontSize: '18px', fontWeight: 700, color: 'var(--secondary)' }}>
+                Simulate Outbound B2B Transfer (PACS.008)
+              </h3>
+              <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '20px' }}>
+                Initiate an outbound interbank transfer. This creates a secure payment intent and signs the confirm step using your private key.
+              </p>
+
+              <form onSubmit={handleB2BTransfer} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <div className="grid-2">
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label className="form-label">Destination Clearing Account ID</label>
+                    <input 
+                      type="text" 
+                      className="form-input" 
+                      style={{ fontFamily: 'var(--font-mono)' }}
+                      placeholder="e.g. acc_clearing_bankb"
+                      value={b2bDestAccount}
+                      onChange={e => setB2bDestAccount(e.target.value)}
+                      required
+                    />
+                  </div>
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label className="form-label">Transfer Amount (USD)</label>
+                    <input 
+                      type="number" 
+                      className="form-input" 
+                      value={b2bAmount} 
+                      onChange={e => setB2bAmount(e.target.value)} 
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Your Private Key PEM (Required to sign request)</label>
+                  <textarea 
+                    className="form-input" 
+                    style={{ fontFamily: 'var(--font-mono)', height: '100px', fontSize: '11px', resize: 'none' }}
+                    placeholder="-----BEGIN PRIVATE KEY-----\nMGECAQEGCSqGSIb3DQEHATAoBggqhkjOPQMEAjAXBgcqhkjOPQIB..."
+                    value={b2bPrivateKey}
+                    onChange={e => setB2bPrivateKey(e.target.value)}
+                    required
+                  />
+                </div>
+
+                <button type="submit" className="btn btn-nav-primary" style={{ alignSelf: 'flex-start' }} disabled={b2bLoading}>
+                  {b2bLoading ? 'Signing & Sending...' : 'Execute Outbound Pacs.008 Transfer'}
+                </button>
+              </form>
+
+              {pacs008Xml && (
+                <div style={{ marginTop: '20px' }}>
+                  <div style={{ fontSize: '11px', color: 'var(--secondary)', marginBottom: '6px', fontWeight: 600 }}>
+                    GENERATED PACS.008 CUSTOMER CREDIT TRANSFER XML:
+                  </div>
+                  <pre className="code-block" style={{ fontSize: '10px', maxHeight: '180px', overflowY: 'auto', color: 'var(--secondary)', border: '1px solid var(--secondary-glow)' }}>
+                    {pacs008Xml}
+                  </pre>
+                </div>
+              )}
+            </div>
+          ) : (
+            /* Admin Clearinghouse Net Sweep Panel */
+            <div className="glass-panel" style={{ border: '1px solid var(--primary-glow)' }}>
+              <div className="badge" style={{ marginBottom: '12px' }}>OPERATOR CLEARING sweep</div>
+              <h3 style={{ marginBottom: '8px', fontSize: '18px', fontWeight: 700, color: 'var(--primary)' }}>
+                Deferred Net Settlement Sweep (PACS.009)
+              </h3>
+              <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '20px' }}>
+                As the clearinghouse operator, compute net positions across all bank sharded ledgers and trigger the settlement cover sweeps.
+              </p>
+
+              <button 
+                type="button" 
+                className="btn btn-nav-primary" 
+                onClick={triggerNetSweep} 
+                disabled={sweepLoading}
+                style={{ background: 'linear-gradient(135deg, var(--primary), var(--primary-glow))' }}
+              >
+                {sweepLoading ? 'Processing Net Sweep...' : '⚡ Trigger Net Settlement Sweep'}
+              </button>
+
+              {pacs009Xml && (
+                <div style={{ marginTop: '20px' }}>
+                  <div style={{ fontSize: '11px', color: 'var(--primary)', marginBottom: '6px', fontWeight: 600 }}>
+                    GENERATED PACS.009 COVE CO-SETTLEMENT XML:
+                  </div>
+                  <pre className="code-block" style={{ fontSize: '10px', maxHeight: '180px', overflowY: 'auto', color: 'var(--primary)', border: '1px solid var(--primary-glow)' }}>
+                    {pacs009Xml}
+                  </pre>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Manual Deposit Seeding (Visible to all for testing and quick setups) */}
           <div className="glass-panel">
             <h3 style={{ marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>Simulate External Banking Transfer (Deposits)</h3>
             <form onSubmit={handleSeedFunds} style={{ display: 'flex', gap: '16px', alignItems: 'flex-end' }}>
@@ -231,8 +380,8 @@ export default function DashboardTab({ refreshTrigger }: DashboardTabProps) {
                     if (acc) setSeedCurrency(acc.currency);
                   }}
                 >
-                  {accounts.map(a => (
-                    <option key={a.id} value={a.id}>
+                  {accounts.map((a, idx) => (
+                    <option key={`${a.id}-${idx}`} value={a.id}>
                       {a.name} ({a.currency}) - Bal: {formatCurrency(a.balance, a.currency)}
                     </option>
                   ))}
@@ -240,7 +389,7 @@ export default function DashboardTab({ refreshTrigger }: DashboardTabProps) {
               </div>
 
               <div className="form-group" style={{ width: '120px', marginBottom: 0 }}>
-                <label className="form-label">Amount (Cash)</label>
+                <label className="form-label">Amount (USD)</label>
                 <input 
                   type="number" 
                   className="form-input" 
@@ -252,76 +401,6 @@ export default function DashboardTab({ refreshTrigger }: DashboardTabProps) {
 
               <button type="submit" className="button">
                 <span>➕</span> Inject Funds
-              </button>
-            </form>
-          </div>
-
-          <div className="glass-panel">
-            <h3 style={{ marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>Simulate Logistics Shipment Billings (Liability Creation)</h3>
-            <form onSubmit={handleInvoiceCreate} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <div className="grid-2">
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label">Provider Account</label>
-                  <select className="form-select" value={invoiceProvider} onChange={e => setInvoiceProvider(e.target.value)}>
-                    {accounts.filter(a => a.category === 'logistics').map(a => (
-                      <option key={a.id} value={a.id}>{a.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label">Invoice Total (USD)</label>
-                  <input type="number" className="form-input" value={invoiceAmount} onChange={e => setInvoiceAmount(e.target.value)} />
-                </div>
-              </div>
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">Line Item Invoice Description</label>
-                <input type="text" className="form-input" value={invoiceDesc} onChange={e => setInvoiceDesc(e.target.value)} />
-              </div>
-              <button type="submit" className="button" style={{ alignSelf: 'flex-start' }}>
-                <span>📝</span> Record AP Bill Invoice
-              </button>
-            </form>
-          </div>
-
-          <div className="glass-panel">
-            <h3 style={{ marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>Clear Outstanding Logistics Invoice (Debit AP & Credit Bank)</h3>
-            <form onSubmit={handleInvoicePay} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <div className="grid-3">
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label">Logistics Provider</label>
-                  <select 
-                    className="form-select" 
-                    value={paymentProvider} 
-                    onChange={(e) => {
-                      setPaymentProvider(e.target.value);
-                      const acc = accounts.find(a => a.id === e.target.value);
-                      if (acc) setPaymentAmount((acc.balance / 100).toString());
-                    }}
-                  >
-                    {accounts.filter(a => a.category === 'logistics').map(a => (
-                      <option key={a.id} value={a.id}>
-                        {a.name} (Due: {formatCurrency(a.balance, 'USD')})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label">Funding Account</label>
-                  <select className="form-select" value={paymentBank} onChange={e => setPaymentBank(e.target.value)}>
-                    {accounts.filter(a => a.category === 'bank' || a.category === 'broker_cash').map(a => (
-                      <option key={a.id} value={a.id}>
-                        {a.name} (Bal: {formatCurrency(a.balance, a.currency)})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label">Amount to Clear (USD)</label>
-                  <input type="number" className="form-input" value={paymentAmount} onChange={e => setPaymentAmount(e.target.value)} />
-                </div>
-              </div>
-              <button type="submit" className="button" style={{ alignSelf: 'flex-start' }}>
-                <span>💸</span> Execute Settlement Payment
               </button>
             </form>
           </div>
@@ -345,7 +424,7 @@ export default function DashboardTab({ refreshTrigger }: DashboardTabProps) {
                     border: '1px solid var(--border-glass)',
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: '4px'
+                    gap: '6px'
                   }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -358,7 +437,7 @@ export default function DashboardTab({ refreshTrigger }: DashboardTabProps) {
                   </div>
                   
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-muted)' }}>
-                    <span>TX: {tx.id}</span>
+                    <span>TX ID: {tx.id}</span>
                     <span>{new Date(tx.created_at).toLocaleTimeString()}</span>
                   </div>
                 </div>

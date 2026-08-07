@@ -147,9 +147,9 @@ export default function LedgerTab({ refreshTrigger }: LedgerTabProps) {
             <div key={type} className="ledger-category-group">
               <h4 className="ledger-category-title">{type} Accounts</h4>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                {list.map((account) => (
+                {list.map((account, idx) => (
                   <div 
-                    key={account.id} 
+                    key={`${account.id}-${idx}`} 
                     className={`ledger-row ${selectedAccount?.id === account.id ? 'selected' : ''}`}
                     onClick={() => handleAccountClick(account)}
                   >

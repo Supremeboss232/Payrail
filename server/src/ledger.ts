@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { railDb } from './db';
+import { railDb, systemTenantId } from './db';
 import { generateMerkleHash } from './b2b';
 
 export interface LedgerEntryInput {
@@ -40,34 +40,32 @@ export interface LedgerEntry {
   created_at: string;
 }
 
-/**
- * Creates an account in the ledger.
- */
 export async function createAccount(
   id: string,
   name: string,
   type: Account['type'],
   category: Account['category'],
   currency: string,
-  initialBalance = 0
+  initialBalance = 0,
+  tenantId = systemTenantId
 ): Promise<Account> {
   const createdAt = new Date().toISOString();
   
   // If initialBalance > 0, we'll create a seeding transaction to keep the double-entry ledger balanced.
   // We offset it against a system equity account: `acc_system_equity`
   await railDb.execute({
-    sql: `INSERT OR IGNORE INTO accounts (id, name, type, category, currency, balance, status, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, 'active', ?)`,
-    args: [id, name, type, category, currency.toUpperCase(), 0, createdAt],
+    sql: `INSERT OR IGNORE INTO accounts (id, tenant_id, name, type, category, currency, balance, status, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
+    args: [id, tenantId, name, type, category, currency.toUpperCase(), 0, createdAt],
   });
 
   if (initialBalance > 0) {
     const equityId = `acc_system_equity_${currency.toLowerCase()}`;
     // Ensure system equity account exists
     await railDb.execute({
-      sql: `INSERT OR IGNORE INTO accounts (id, name, type, category, currency, balance, status, created_at)
-            VALUES (?, ?, 'equity', 'equity', ?, 0, 'active', ?)`,
-      args: [equityId, `System Capital Equity (${currency.toUpperCase()})`, currency.toUpperCase(), createdAt],
+      sql: `INSERT OR IGNORE INTO accounts (id, tenant_id, name, type, category, currency, balance, status, created_at)
+            VALUES (?, ?, ?, 'equity', 'equity', ?, 0, 'active', ?)`,
+      args: [equityId, tenantId, `System Capital Equity (${currency.toUpperCase()})`, currency.toUpperCase(), createdAt],
     });
 
     // Seeding transaction
@@ -93,13 +91,15 @@ export async function createAccount(
       `Seed initial balance for account ${name}`,
       'system',
       entries,
-      `seed_${id}`
+      `seed_${id}`,
+      null,
+      tenantId
     );
   }
 
   const result = await railDb.execute({
-    sql: 'SELECT * FROM accounts WHERE id = ?',
-    args: [id],
+    sql: 'SELECT * FROM accounts WHERE id = ? AND tenant_id = ?',
+    args: [id, tenantId],
   });
   
   return result.rows[0] as unknown as Account;
@@ -115,7 +115,7 @@ export async function postTransaction(
   entries: LedgerEntryInput[],
   referenceId: string | null = null,
   paymentIntentId: string | null = null,
-  tenantId: string | null = null
+  tenantId: string | null = systemTenantId
 ): Promise<Transaction> {
   if (entries.length < 2) {
     throw new Error('A transaction must have at least 2 entries.');
@@ -151,6 +151,11 @@ export async function postTransaction(
   const tx = await railDb.transaction('write');
 
   try {
+    const activeTenantId = tenantId || systemTenantId;
+    if (railDb.isPostgres) {
+      await tx.execute(`SET local nile.tenant_id = '${activeTenantId}'`);
+    }
+
     // 2. Fetch and validate accounts involved, verifying status and currencies
     const accountIds = entries.map(e => e.accountId);
     const placeholders = accountIds.map(() => '?').join(',');
@@ -186,7 +191,7 @@ export async function postTransaction(
     await tx.execute({
       sql: `INSERT INTO transactions (id, tenant_id, payment_intent_id, description, source_channel, reference_id, status, merkle_hash, created_at)
             VALUES (?, ?, ?, ?, ?, ?, 'posted', ?, ?)`,
-      args: [txId, tenantId, paymentIntentId, description, sourceChannel, referenceId, merkleHash, timestamp],
+      args: [txId, activeTenantId, paymentIntentId, description, sourceChannel, referenceId, merkleHash, timestamp],
     });
 
     // 4. Write entries and update balances
@@ -207,22 +212,23 @@ export async function postTransaction(
       }
 
       // Check balance limit for Asset/Expense to prevent overdraft if desired (here we allow negative balances, but you can block it)
-      const newBalance = acc.balance + balanceDelta;
+      const balance = Number(acc.balance);
+      const newBalance = balance + balanceDelta;
       if (isAssetOrExpense && acc.category !== 'equity' && newBalance < 0 && acc.category === 'wallet') {
         throw new Error(`Insufficient funds in wallet account ${acc.name}.`);
       }
 
       // Write Ledger Entry line
       await tx.execute({
-        sql: `INSERT INTO entries (id, transaction_id, account_id, type, amount, currency, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        args: [entryId, txId, entry.accountId, entry.type, entry.amount, entry.currency.toUpperCase(), timestamp],
+        sql: `INSERT INTO entries (id, tenant_id, transaction_id, account_id, type, amount, currency, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [entryId, activeTenantId, txId, entry.accountId, entry.type, entry.amount, entry.currency.toUpperCase(), timestamp],
       });
 
       // Update cached account balance
       await tx.execute({
-        sql: `UPDATE accounts SET balance = ? WHERE id = ?`,
-        args: [newBalance, entry.accountId],
+        sql: `UPDATE accounts SET balance = ? WHERE id = ? AND tenant_id = ?`,
+        args: [newBalance, entry.accountId, (acc as any).tenant_id || '00000000-0000-0000-0000-000000000000'],
       });
     }
 
@@ -246,7 +252,14 @@ export async function postTransaction(
 /**
  * Retrieves all accounts and their current balances
  */
-export async function getAccounts(): Promise<Account[]> {
+export async function getAccounts(tenantId?: string | null): Promise<Account[]> {
+  if (tenantId) {
+    const result = await railDb.execute({
+      sql: 'SELECT * FROM accounts WHERE tenant_id = ? ORDER BY type, name',
+      args: [tenantId],
+    });
+    return result.rows as unknown as Account[];
+  }
   const result = await railDb.execute('SELECT * FROM accounts ORDER BY type, name');
   return result.rows as unknown as Account[];
 }
@@ -254,7 +267,14 @@ export async function getAccounts(): Promise<Account[]> {
 /**
  * Retrieves the transaction journal (newest first)
  */
-export async function getTransactions(): Promise<Transaction[]> {
+export async function getTransactions(tenantId?: string | null): Promise<Transaction[]> {
+  if (tenantId) {
+    const result = await railDb.execute({
+      sql: 'SELECT * FROM transactions WHERE tenant_id = ? ORDER BY created_at DESC',
+      args: [tenantId],
+    });
+    return result.rows as unknown as Transaction[];
+  }
   const result = await railDb.execute('SELECT * FROM transactions ORDER BY created_at DESC');
   return result.rows as unknown as Transaction[];
 }
@@ -273,7 +293,20 @@ export async function getTransactionEntries(transactionId: string): Promise<Ledg
 /**
  * Gets entry history for a specific account
  */
-export async function getAccountHistory(accountId: string): Promise<any[]> {
+export async function getAccountHistory(accountId: string, tenantId?: string | null): Promise<any[]> {
+  if (tenantId) {
+    const result = await railDb.execute({
+      sql: `
+        SELECT e.id, e.type, e.amount, e.currency, e.created_at, t.description, t.id as transaction_id
+        FROM entries e
+        JOIN transactions t ON e.transaction_id = t.id
+        WHERE e.account_id = ? AND e.tenant_id = ?
+        ORDER BY e.created_at DESC
+      `,
+      args: [accountId, tenantId],
+    });
+    return result.rows;
+  }
   const result = await railDb.execute({
     sql: `
       SELECT e.id, e.type, e.amount, e.currency, e.created_at, t.description, t.id as transaction_id

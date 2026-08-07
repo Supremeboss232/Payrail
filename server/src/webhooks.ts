@@ -24,16 +24,16 @@ export interface WebhookLog {
 /**
  * Registers a new webhook URL
  */
-export async function createWebhookEndpoint(url: string, events: string[]): Promise<WebhookEndpoint> {
+export async function createWebhookEndpoint(url: string, events: string[], tenantId: string | null = null): Promise<WebhookEndpoint> {
   const id = `we_${uuidv4().replace(/-/g, '').slice(0, 16)}`;
   const secret = `whsec_${crypto.randomBytes(16).toString('hex')}`;
   const createdAt = new Date().toISOString();
   const eventsJson = JSON.stringify(events);
 
   await vaultDb.execute({
-    sql: `INSERT INTO webhook_endpoints (id, url, secret, events, status, created_at)
-          VALUES (?, ?, ?, ?, 'active', ?)`,
-    args: [id, url, secret, eventsJson, createdAt],
+    sql: `INSERT INTO webhook_endpoints (id, tenant_id, url, secret, events, status, created_at)
+          VALUES (?, ?, ?, ?, ?, 'active', ?)`,
+    args: [id, tenantId, url, secret, eventsJson, createdAt],
   });
 
   return {
@@ -49,7 +49,14 @@ export async function createWebhookEndpoint(url: string, events: string[]): Prom
 /**
  * Gets webhook endpoints
  */
-export async function getWebhookEndpoints(): Promise<WebhookEndpoint[]> {
+export async function getWebhookEndpoints(tenantId?: string | null): Promise<WebhookEndpoint[]> {
+  if (tenantId) {
+    const result = await vaultDb.execute({
+      sql: 'SELECT * FROM webhook_endpoints WHERE tenant_id = ? ORDER BY created_at DESC',
+      args: [tenantId],
+    });
+    return result.rows as unknown as WebhookEndpoint[];
+  }
   const result = await vaultDb.execute('SELECT * FROM webhook_endpoints ORDER BY created_at DESC');
   return result.rows as unknown as WebhookEndpoint[];
 }
@@ -67,7 +74,18 @@ export async function deleteWebhookEndpoint(id: string): Promise<void> {
 /**
  * Retrieves delivery logs for webhooks
  */
-export async function getWebhookLogs(): Promise<WebhookLog[]> {
+export async function getWebhookLogs(tenantId?: string | null): Promise<WebhookLog[]> {
+  if (tenantId) {
+    const result = await vaultDb.execute({
+      sql: `
+        SELECT * FROM webhook_delivery_logs 
+        WHERE endpoint_id IN (SELECT id FROM webhook_endpoints WHERE tenant_id = ?) 
+        ORDER BY delivered_at DESC LIMIT 100
+      `,
+      args: [tenantId],
+    });
+    return result.rows as unknown as WebhookLog[];
+  }
   const result = await vaultDb.execute('SELECT * FROM webhook_delivery_logs ORDER BY delivered_at DESC LIMIT 100');
   return result.rows as unknown as WebhookLog[];
 }
