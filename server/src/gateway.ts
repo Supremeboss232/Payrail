@@ -33,10 +33,10 @@ export interface FundingSource {
 }
 
 /**
- * POST /v1/payment_intents
+ * POST /v1/payment_intents or /v1/payments/payment_intents
  * Creates a Stripe-like Payment Intent
  */
-router.post('/payment_intents', async (req: Request, res: Response) => {
+router.post(['/payment_intents', '/payments/payment_intents'], async (req: Request, res: Response) => {
   const { amount, currency, destination_account_id, metadata = {} } = req.body;
 
   if (!amount || amount <= 0) {
@@ -97,10 +97,10 @@ router.post('/payment_intents', async (req: Request, res: Response) => {
 });
 
 /**
- * POST /v1/payment_intents/:id/confirm
+ * POST /v1/payment_intents/:id/confirm or /v1/payments/payment_intents/:id/confirm
  * Confirms a Payment Intent, executing the ledger transfers and swapping the funding source if failure occurs.
  */
-router.post('/payment_intents/:id/confirm', async (req: Request, res: Response) => {
+router.post(['/payment_intents/:id/confirm', '/payments/payment_intents/:id/confirm'], async (req: Request, res: Response) => {
   const { id } = req.params;
   const { funding_source_id } = req.body; // Optional - override manual funding source
 

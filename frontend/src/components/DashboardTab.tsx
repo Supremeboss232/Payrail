@@ -116,7 +116,7 @@ export default function DashboardTab({ refreshTrigger, user }: DashboardTabProps
 
     try {
       // 1. Create Payment Intent
-      const intentRes = await fetch(`${API_BASE_URL}/v1/payments/payment_intents`, {
+      const intentRes = await fetch(`${API_BASE_URL}/v1/payment_intents`, {
         method: 'POST',
         headers: {
           'Authorization': 'Bearer sk_live_dev_key_12345',
@@ -154,7 +154,7 @@ export default function DashboardTab({ refreshTrigger, user }: DashboardTabProps
       const { timestamp, signature } = await signRes.json();
 
       // 3. Confirm B2B Transfer with headers
-      const confirmRes = await fetch(`${API_BASE_URL}/v1/payments/payment_intents/${intent.id}/confirm`, {
+      const confirmRes = await fetch(`${API_BASE_URL}/v1/payment_intents/${intent.id}/confirm`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

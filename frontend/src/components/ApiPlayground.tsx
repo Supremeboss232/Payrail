@@ -98,17 +98,17 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
 
     if (authMode === 'bearer') {
       headers['Authorization'] = `Bearer ${apiKey}`;
-      const curl = `curl -X POST ${API_BASE_URL}/v1/payments/payment_intents \\\n  -H "Authorization: Bearer ${apiKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(body, null, 2)}'`;
+      const curl = `curl -X POST ${API_BASE_URL}/v1/payment_intents \\\n  -H "Authorization: Bearer ${apiKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(body, null, 2)}'`;
       setCurlCommand(curl);
     } else {
       // B2B routing doesn't require Bearer tokens for intent creation, just standard B2B checks or Bearer bypass
       headers['Authorization'] = `Bearer sk_live_dev_key_12345`; // Dev key fallback for intent creation
-      const curl = `curl -X POST ${API_BASE_URL}/v1/payments/payment_intents \\\n  -H "Authorization: Bearer sk_live_dev_key_12345" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(body, null, 2)}'`;
+      const curl = `curl -X POST ${API_BASE_URL}/v1/payment_intents \\\n  -H "Authorization: Bearer sk_live_dev_key_12345" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(body, null, 2)}'`;
       setCurlCommand(curl);
     }
 
     try {
-      const res = await fetch(`${API_BASE_URL}/v1/payments/payment_intents`, {
+      const res = await fetch(`${API_BASE_URL}/v1/payment_intents`, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
@@ -153,11 +153,11 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
 
     if (authMode === 'bearer') {
       headers['Authorization'] = `Bearer ${apiKey}`;
-      curl = `curl -X POST ${API_BASE_URL}/v1/payments/payment_intents/${confirmIntentId}/confirm \\\n  -H "Authorization: Bearer ${apiKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(payload, null, 2)}'`;
+      curl = `curl -X POST ${API_BASE_URL}/v1/payment_intents/${confirmIntentId}/confirm \\\n  -H "Authorization: Bearer ${apiKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(payload, null, 2)}'`;
       setCurlCommand(curl);
 
       try {
-        const res = await fetch(`${API_BASE_URL}/v1/payments/payment_intents/${confirmIntentId}/confirm`, {
+        const res = await fetch(`${API_BASE_URL}/v1/payment_intents/${confirmIntentId}/confirm`, {
           method: 'POST',
           headers,
           body: JSON.stringify(payload),
@@ -201,11 +201,11 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
         headers['Payrail-Tenant-Id'] = b2bTenantId;
         headers['Payrail-Signature'] = `t=${timestamp},v1=${signature}`;
 
-        curl = `curl -X POST ${API_BASE_URL}/v1/payments/payment_intents/${confirmIntentId}/confirm \\\n  -H "Payrail-Tenant-Id: ${b2bTenantId}" \\\n  -H "Payrail-Signature: t=${timestamp},v1=${signature}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(payload, null, 2)}'`;
+        curl = `curl -X POST ${API_BASE_URL}/v1/payment_intents/${confirmIntentId}/confirm \\\n  -H "Payrail-Tenant-Id: ${b2bTenantId}" \\\n  -H "Payrail-Signature: t=${timestamp},v1=${signature}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(payload, null, 2)}'`;
         setCurlCommand(curl);
 
         // 2. Perform Confirm
-        const res = await fetch(`${API_BASE_URL}/v1/payments/payment_intents/${confirmIntentId}/confirm`, {
+        const res = await fetch(`${API_BASE_URL}/v1/payment_intents/${confirmIntentId}/confirm`, {
           method: 'POST',
           headers,
           body: JSON.stringify(payload),
