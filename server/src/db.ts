@@ -485,7 +485,7 @@ export async function initDb() {
       account_id TEXT NOT NULL,
       priority INTEGER NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
-      connector_type TEXT NOT NULL DEFAULT 'simulation', -- 'http_callback', 'web3_rpc', 'simulation'
+      connector_type TEXT NOT NULL DEFAULT 'http_callback', -- 'http_callback', 'web3_rpc'
       credentials_encrypted TEXT, -- stores AES-256-GCM encrypted parameters
       created_at TEXT NOT NULL
     );

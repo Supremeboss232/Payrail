@@ -1,4 +1,4 @@
-﻿import { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { API_BASE_URL } from '../App';
 
 interface BankTenant {
@@ -25,7 +25,6 @@ interface BanksTabProps {
 }
 
 const CONNECTOR_ICONS: Record<string, string> = {
-  simulation: '🔬',
   http_callback: '🌐',
   web3_rpc: '⚡',
   none: '—'

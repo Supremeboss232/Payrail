@@ -68,20 +68,7 @@ export async function executeHttpCallback(
   const headers = resolvePlaceholders(config.headers || {});
   const body = resolvePlaceholders(config.body_template || {});
 
-  // If simulation loop mode is enabled and it is a test run, bypass fetch
-  if (
-    process.env.MOCK_REAL_CONNECTOR === 'true' || 
-    url.includes('localhost') || 
-    url.includes('127.0.0.1') ||
-    url.includes('partnerbank.com')
-  ) {
-    console.log(`[REST CONNECTOR] Dispatching HTTP Call to: ${method} ${url}`);
-    console.log('Headers:', JSON.stringify(headers));
-    console.log('Body:', JSON.stringify(body));
-    return `http_ref_${uuidv4().replace(/-/g, '').slice(0, 12)}`;
-  }
-
-  // 2. Dispatch live request
+  // Dispatch live HTTP request
   try {
     const res = await axios({
       url,
@@ -94,7 +81,7 @@ export async function executeHttpCallback(
       timeout: 8000
     });
 
-    // 3. Resolve transaction reference from response
+    // Resolve transaction reference from response
     if (config.response_path) {
       const parts = config.response_path.split('.');
       let val: any = res;
@@ -104,7 +91,7 @@ export async function executeHttpCallback(
       if (val) return val.toString();
     }
 
-    return res.data?.id || res.data?.tx_hash || res.data?.reference || `api_ref_${uuidv4().replace(/-/g, '').slice(0, 12)}`;
+    return res.data?.id || res.data?.tx_hash || res.data?.reference || `http_ref_${uuidv4().replace(/-/g, '').slice(0, 12)}`;
   } catch (error: any) {
     const apiMsg = error.response?.data ? JSON.stringify(error.response.data) : error.message;
     throw new Error(`REST API Connector failed: ${apiMsg}`);
@@ -113,7 +100,7 @@ export async function executeHttpCallback(
 
 /**
  * Web3 JSON-RPC Node Token Transfer Adapter (web3_rpc)
- * Connects to a generic EVM node, verifies gas balance, and transfers tokens (e.g. USDC).
+ * Connects to an EVM node, verifies gas balance, and transfers tokens (e.g. USDC).
  */
 export async function executeWeb3RpcTransfer(
   config: ConnectorConfig,
@@ -127,12 +114,6 @@ export async function executeWeb3RpcTransfer(
 
   if (!rpcUrl || !privateKey || !toAddress) {
     throw new Error('Web3 RPC Connector Error: rpc_url, private_key, and destination_address are required.');
-  }
-
-  // Fallback to simulation if test run or sandbox is active without a valid node
-  if (process.env.MOCK_REAL_CONNECTOR === 'true' || rpcUrl.includes('localhost') || privateKey.startsWith('0xmock_')) {
-    console.log(`[WEB3 CONNECTOR] RPC Transfer of ${amountCents} cents worth of ${currency} to ${toAddress}`);
-    return `0xrpc_tx_hash_${uuidv4().replace(/-/g, '')}`;
   }
 
   try {
@@ -179,19 +160,3 @@ export async function executeWeb3RpcTransfer(
   }
 }
 
-/**
- * Standard Simulation Sandbox Adapter (simulation)
- * Sleeps for a mock network lag, prints output, and returns a dummy reference.
- */
-export async function executeSimulation(
-  amountCents: number,
-  currency: string
-): Promise<string> {
-  // Wait 100ms
-  await new Promise(resolve => setTimeout(resolve, 100));
-  
-  const txId = `tx_ref_${uuidv4().replace(/-/g, '').slice(0, 12)}`;
-  console.log(`[PAYMENT CONNECTOR] Successfully processed settlement transfer of ${(amountCents / 100).toFixed(2)} ${currency}. Ref: ${txId}`);
-  
-  return txId;
-}

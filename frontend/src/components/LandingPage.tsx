@@ -7,7 +7,7 @@ interface LandingPageProps {
 export default function LandingPage({ onNavigate }: LandingPageProps) {
   const [activeStep, setActiveStep] = useState<number>(0);
 
-  const simulationSteps = [
+  const flowSteps = [
     {
       title: "1. Pacs.008 Initiation",
       desc: "Bank A signs a transaction using their Secp256k1 private key. The payload is sent to Payrail via a secure B2B RPC request.",
@@ -72,13 +72,13 @@ export default function LandingPage({ onNavigate }: LandingPageProps) {
         </div>
       </header>
 
-      {/* Real-time Flow Interactive Simulator */}
+      {/* Real-time Flow Interactive Pipeline Explorer */}
       <section className="architecture-section">
         <h2 className="section-title">Visual Settlement Sequence Explorer</h2>
         
         <div className="interactive-simulator-card glass">
           <div className="sim-nav">
-            {simulationSteps.map((step, idx) => (
+            {flowSteps.map((step, idx) => (
               <button 
                 key={idx} 
                 className={`sim-nav-btn ${activeStep === idx ? 'active' : ''}`}
@@ -91,8 +91,8 @@ export default function LandingPage({ onNavigate }: LandingPageProps) {
 
           <div className="sim-body">
             <div className="sim-info">
-              <h3>{simulationSteps[activeStep].title}</h3>
-              <p>{simulationSteps[activeStep].desc}</p>
+              <h3>{flowSteps[activeStep].title}</h3>
+              <p>{flowSteps[activeStep].desc}</p>
               
               {/* Visual SVG Flow Diagram */}
               <div className="svg-flow-container">
@@ -121,7 +121,7 @@ export default function LandingPage({ onNavigate }: LandingPageProps) {
                 <span className="mac-dot green" />
                 <span className="code-title">ISO 20022 payload schema</span>
               </div>
-              <pre><code>{simulationSteps[activeStep].code}</code></pre>
+              <pre><code>{flowSteps[activeStep].code}</code></pre>
             </div>
           </div>
         </div>

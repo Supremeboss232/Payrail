@@ -1,4 +1,4 @@
-﻿import { useState } from 'react';
+import { useState } from 'react';
 import { API_BASE_URL } from '../App';
 
 type AuthPortalProps = {
@@ -7,26 +7,20 @@ type AuthPortalProps = {
   onNavigateHome: () => void;
 };
 
-type ConnectorType = 'simulation' | 'http_callback' | 'web3_rpc';
+type ConnectorType = 'http_callback' | 'web3_rpc';
 
 const CONNECTOR_OPTIONS: { type: ConnectorType; icon: string; label: string; desc: string }[] = [
-  {
-    type: 'simulation',
-    icon: '🔬',
-    label: 'Simulation Mode',
-    desc: 'Dry-run environment. No real funds move. Perfect for testing and staging.'
-  },
   {
     type: 'http_callback',
     icon: '🌐',
     label: 'REST API Webhook',
-    desc: 'Connect to your core banking system via HTTP callback. Most common integration path.'
+    desc: 'Connect to your core banking system via HTTP callback. Direct automated settlement.'
   },
   {
     type: 'web3_rpc',
     icon: '⚡',
     label: 'Web3 / Blockchain',
-    desc: 'Settle via an EVM-compatible blockchain node (Ethereum, Polygon, etc.).'
+    desc: 'Settle via an EVM-compatible blockchain node (Ethereum, Polygon, Arbitrum, etc.).'
   }
 ];
 
@@ -53,7 +47,7 @@ export default function AuthPortal({ initialView, onAuthSuccess, onNavigateHome 
   const [confirmPassword, setConfirmPassword] = useState('');
 
   // Step 3
-  const [connectorType, setConnectorType] = useState<ConnectorType>('simulation');
+  const [connectorType, setConnectorType] = useState<ConnectorType>('http_callback');
   const [httpUrl, setHttpUrl] = useState('');
   const [httpMethod, setHttpMethod] = useState('POST');
   const [httpAuthHeader, setHttpAuthHeader] = useState('');
@@ -103,8 +97,7 @@ export default function AuthPortal({ initialView, onAuthSuccess, onNavigateHome 
 
   const step1Valid = legalName.trim().length >= 3 && validateBic(routingCode) && !bicError;
   const step2Valid = username.trim().length >= 3 && password.length >= 6 && password === confirmPassword;
-  const step3Valid = connectorType === 'simulation'
-    || (connectorType === 'http_callback' && httpUrl.startsWith('http'))
+  const step3Valid = (connectorType === 'http_callback' && httpUrl.startsWith('http'))
     || (connectorType === 'web3_rpc' && rpcUrl.startsWith('http'));
 
   const buildConnectorConfig = () => {
@@ -348,12 +341,6 @@ export default function AuthPortal({ initialView, onAuthSuccess, onNavigateHome 
                 </div>
               </div>
             )}
-            {connectorType === 'simulation' && (
-              <div className="wizard-info-box success">
-                <span>✅</span>
-                <p>Simulation mode is ready immediately. Switch to a live connector any time from the Funding tab.</p>
-              </div>
-            )}
             <button className="auth-btn-primary" disabled={!step3Valid} onClick={() => setStep(4)}>Continue</button>
           </div>
         )}
@@ -363,13 +350,12 @@ export default function AuthPortal({ initialView, onAuthSuccess, onNavigateHome 
             <div className="wizard-step-header">
               <span className="wizard-step-icon">📡</span>
               <h2>Connection Test</h2>
-              <p>Verify Payrail can reach your {connectorType === 'simulation' ? 'simulation' : connectorType === 'http_callback' ? 'webhook endpoint' : 'RPC node'} before going live.</p>
+              <p>Verify Payrail can reach your {connectorType === 'http_callback' ? 'webhook endpoint' : 'RPC node'} before going live.</p>
             </div>
             <div className="test-connection-panel">
               <div className="test-target">
                 <div className="test-target-label">Target</div>
                 <div className="test-target-value">
-                  {connectorType === 'simulation' && '🔬 Simulation Mode'}
                   {connectorType === 'http_callback' && `🌐 ${httpUrl}`}
                   {connectorType === 'web3_rpc' && `⚡ ${rpcUrl}`}
                 </div>

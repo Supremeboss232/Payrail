@@ -5,7 +5,7 @@ import { postTransaction, LedgerEntryInput, createAccount } from './ledger';
 import { dispatchWebhookEvent } from './webhooks';
 import { buildPacs008, buildPacs009 } from './b2b';
 import { decryptCredentials, encryptCredentials } from './crypto';
-import { executeHttpCallback, executeWeb3RpcTransfer, executeSimulation } from './integrations';
+import { executeHttpCallback, executeWeb3RpcTransfer } from './integrations';
 
 const router = Router();
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'payment-rail-master-default-key-12345';
@@ -187,22 +187,17 @@ router.post('/payment_intents/:id/confirm', async (req: Request, res: Response) 
 
         // 1. Dispatch dynamic outbound transfer to external API
         let transactionReference = '';
-        if (connType === 'simulation') {
-          transactionReference = await executeSimulation(pi.amount, pi.currency);
-        } else {
-          const encCreds = (fs as any).credentials_encrypted;
-          if (!encCreds) {
-            throw new Error(`Integration configuration credentials not registered for funding source ${fs.name}.`);
-          }
-          const decryptedConfig = decryptCredentials(encCreds, ENCRYPTION_KEY);
+        const encCreds = (fs as any).credentials_encrypted;
+        if (!encCreds && connType !== 'none') {
+          throw new Error(`Integration credentials not configured for funding source ${fs.name}.`);
+        }
 
-          if (connType === 'http_callback') {
-            transactionReference = await executeHttpCallback(decryptedConfig, pi.amount, pi.currency, pi.destination_account_id);
-          } else if (connType === 'web3_rpc') {
-            transactionReference = await executeWeb3RpcTransfer(decryptedConfig, pi.amount, pi.currency);
-          } else {
-            throw new Error(`Invalid connector_type: ${connType}`);
-          }
+        const decryptedConfig = encCreds ? decryptCredentials(encCreds, ENCRYPTION_KEY) : {};
+
+        if (connType === 'web3_rpc') {
+          transactionReference = await executeWeb3RpcTransfer(decryptedConfig, pi.amount, pi.currency);
+        } else {
+          transactionReference = await executeHttpCallback(decryptedConfig, pi.amount, pi.currency, pi.destination_account_id);
         }
 
         // 2. Post double-entry ledger entries (Only if API transfer was successful!)
@@ -708,11 +703,7 @@ router.post('/banks/test_connection', async (req: Request, res: Response) => {
     return;
   }
 
-  // Simulation mode always succeeds
-  if (connector_type === 'simulation') {
-    res.json({ ok: true, latency_ms: 0, message: 'Simulation connector is always reachable.' });
-    return;
-  }
+
 
   if (connector_type === 'http_callback') {
     if (!url) {
@@ -801,7 +792,7 @@ router.post('/banks/test_connection', async (req: Request, res: Response) => {
     return;
   }
 
-  res.status(400).json({ error: `Unknown connector_type: ${connector_type}. Use simulation, http_callback, or web3_rpc.` });
+  res.status(400).json({ error: `Unknown connector_type: ${connector_type}. Use http_callback or web3_rpc.` });
 });
 
 export default router;
