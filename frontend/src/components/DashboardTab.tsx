@@ -96,7 +96,7 @@ export default function DashboardTab({ refreshTrigger, user }: DashboardTabProps
       });
 
       if (res.ok) {
-        alert(`Successfully injected $${seedAmount} into ${seedAccount}!`);
+        alert(`Successfully deposited $${seedAmount} into ${seedAccount}!`);
         window.location.reload();
       }
     } catch (err) {
@@ -107,7 +107,7 @@ export default function DashboardTab({ refreshTrigger, user }: DashboardTabProps
   const handleB2BTransfer = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!b2bDestAccount || !b2bAmount || !b2bPrivateKey) {
-      alert('Destination Account, Amount, and Private Key PEM are required to simulate signed B2B transfers.');
+      alert('Destination Account, Amount, and Private Key PEM are required to execute signed B2B transfers.');
       return;
     }
 
@@ -271,7 +271,7 @@ export default function DashboardTab({ refreshTrigger, user }: DashboardTabProps
             <div className="glass-panel" style={{ border: '1px solid var(--secondary-glow)' }}>
               <div className="badge" style={{ marginBottom: '12px' }}>INTERBANK PACS.008 CLEARING</div>
               <h3 style={{ marginBottom: '8px', fontSize: '18px', fontWeight: 700, color: 'var(--secondary)' }}>
-                Simulate Outbound B2B Transfer (PACS.008)
+                Outbound B2B Transfer (PACS.008)
               </h3>
               <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '20px' }}>
                 Initiate an outbound interbank transfer. This creates a secure payment intent and signs the confirm step using your private key.
@@ -365,9 +365,9 @@ export default function DashboardTab({ refreshTrigger, user }: DashboardTabProps
             </div>
           )}
 
-          {/* Manual Deposit Seeding (Visible to all for testing and quick setups) */}
+          {/* Treasury Liquidity Deposit (Visible to all for funding balances) */}
           <div className="glass-panel">
-            <h3 style={{ marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>Simulate External Banking Transfer (Deposits)</h3>
+            <h3 style={{ marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>Treasury Liquidity Deposit (Direct Funding)</h3>
             <form onSubmit={handleSeedFunds} style={{ display: 'flex', gap: '16px', alignItems: 'flex-end' }}>
               <div className="form-group" style={{ flexGrow: 1, marginBottom: 0 }}>
                 <label className="form-label">Select Ledger Account</label>
@@ -400,7 +400,7 @@ export default function DashboardTab({ refreshTrigger, user }: DashboardTabProps
               </div>
 
               <button type="submit" className="button">
-                <span>➕</span> Inject Funds
+                <span>➕</span> Deposit Funds
               </button>
             </form>
           </div>

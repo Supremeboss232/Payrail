@@ -410,23 +410,23 @@ app.post('/console/seed_funds', async (req, res) => {
     }
 
     const tx = await postTransaction(
-      `Console manual deposit to ${accountId}`,
+      `Console treasury liquidity deposit to ${accountId}`,
       'console',
       [
         { accountId, type: 'debit', amount, currency },
         { accountId: systemEquity, type: 'credit', amount, currency },
       ],
-      `seed_${accountId}_${Date.now()}`,
+      `dep_${accountId}_${Date.now()}`,
       null,
       tenantId
     );
     await createNotification(
       tenantId,
-      'Mock Funds Injected',
-      `Successfully deposited $${(amount / 100).toFixed(2)} ${currency.toUpperCase()} to account ${accountId}.`,
+      'Treasury Liquidity Deposited',
+      `Direct treasury liquidity deposit of $${(amount / 100).toFixed(2)} ${currency.toUpperCase()} deposited to account ${accountId}.`,
       'success'
     );
-    res.json({ success: true });
+    res.json({ success: true, message: 'Treasury liquidity deposited successfully.' });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

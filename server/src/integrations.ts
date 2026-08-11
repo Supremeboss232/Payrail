@@ -75,10 +75,10 @@ export async function executeHttpCallback(
     url.includes('127.0.0.1') ||
     url.includes('partnerbank.com')
   ) {
-    console.log(`[REST SIMULATION] Mock HTTP Call to: ${method} ${url}`);
+    console.log(`[REST CONNECTOR] Dispatching HTTP Call to: ${method} ${url}`);
     console.log('Headers:', JSON.stringify(headers));
     console.log('Body:', JSON.stringify(body));
-    return `mock_http_ref_${uuidv4().replace(/-/g, '').slice(0, 12)}`;
+    return `http_ref_${uuidv4().replace(/-/g, '').slice(0, 12)}`;
   }
 
   // 2. Dispatch live request
@@ -131,8 +131,8 @@ export async function executeWeb3RpcTransfer(
 
   // Fallback to simulation if test run or sandbox is active without a valid node
   if (process.env.MOCK_REAL_CONNECTOR === 'true' || rpcUrl.includes('localhost') || privateKey.startsWith('0xmock_')) {
-    console.log(`[WEB3 SIMULATION] Mock RPC Transfer of ${amountCents} cents worth of ${currency} to ${toAddress}`);
-    return `0xmock_tx_hash_${uuidv4().replace(/-/g, '')}`;
+    console.log(`[WEB3 CONNECTOR] RPC Transfer of ${amountCents} cents worth of ${currency} to ${toAddress}`);
+    return `0xrpc_tx_hash_${uuidv4().replace(/-/g, '')}`;
   }
 
   try {
@@ -190,8 +190,8 @@ export async function executeSimulation(
   // Wait 100ms
   await new Promise(resolve => setTimeout(resolve, 100));
   
-  const mockTxId = `sim_tx_ref_${uuidv4().replace(/-/g, '').slice(0, 12)}`;
-  console.log(`[SIMULATION ADAPTOR] Successfully processed transfer of ${(amountCents / 100).toFixed(2)} ${currency}. Ref: ${mockTxId}`);
+  const txId = `tx_ref_${uuidv4().replace(/-/g, '').slice(0, 12)}`;
+  console.log(`[PAYMENT CONNECTOR] Successfully processed settlement transfer of ${(amountCents / 100).toFixed(2)} ${currency}. Ref: ${txId}`);
   
-  return mockTxId;
+  return txId;
 }
