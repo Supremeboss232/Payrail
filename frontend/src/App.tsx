@@ -7,8 +7,9 @@ import ApiPlayground from './components/ApiPlayground';
 import LandingPage from './components/LandingPage';
 import AuthPortal from './components/AuthPortal';
 import BanksTab from './components/BanksTab';
+import ProvidersTab from './components/ProvidersTab';
 
-export type TabType = 'dashboard' | 'ledger' | 'funding_sources' | 'banks' | 'keys_webhooks' | 'playground';
+export type TabType = 'dashboard' | 'ledger' | 'funding_sources' | 'banks' | 'providers' | 'keys_webhooks' | 'playground';
 
 export const API_BASE_URL = window.location.port === '9000' ? 'http://127.0.0.95:9500' : window.location.origin;
 
@@ -211,6 +212,7 @@ function App() {
       case 'ledger': return 'Double-Entry Bookkeeping Journal';
       case 'funding_sources': return 'Routing Paths & Swaps';
       case 'banks': return 'Connected Banks & Connectors';
+      case 'providers': return 'Vendor Service Provider Integrations';
       case 'keys_webhooks': return 'B2B Credentials & Callback Subscriptions';
       case 'playground': return 'API Gateway & Integration Playground';
     }
@@ -295,6 +297,14 @@ function App() {
           )}
 
           <button 
+            className={`nav-item ${activeTab === 'providers' ? 'active' : ''}`}
+            onClick={() => setActiveTab('providers')}
+          >
+            <span className="nav-icon">🔌</span>
+            <span>Provider Services</span>
+          </button>
+
+          <button 
             className={`nav-item ${activeTab === 'keys_webhooks' ? 'active' : ''}`}
             onClick={() => setActiveTab('keys_webhooks')}
           >
@@ -350,6 +360,7 @@ function App() {
               onConnectBank={() => setView('register')}
             />
           )}
+          {activeTab === 'providers' && <ProvidersTab />}
           {activeTab === 'keys_webhooks' && <KeysAndWebhooksTab refreshTrigger={refreshTrigger} />}
           {activeTab === 'playground' && <ApiPlayground refreshTrigger={refreshTrigger} onApiExecuted={triggerGlobalRefresh} user={user} />}
         </div>

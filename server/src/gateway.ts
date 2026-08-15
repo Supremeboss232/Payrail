@@ -6,6 +6,7 @@ import { dispatchWebhookEvent } from './webhooks';
 import { buildPacs008, buildPacs009 } from './b2b';
 import { decryptCredentials, encryptCredentials } from './crypto';
 import { executeHttpCallback, executeWeb3RpcTransfer } from './integrations';
+import { screenPayment } from './compliance';
 
 const router = Router();
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'payment-rail-master-default-key-12345';
@@ -124,6 +125,46 @@ router.post(['/payment_intents/:id/confirm', '/payments/payment_intents/:id/conf
     }
     if (pi.status === 'canceled' || pi.status === 'failed') {
       res.status(400).json({ error: `Payment intent cannot be confirmed from status ${pi.status}.` });
+      return;
+    }
+
+    // 2a. Block simulation connector type — not supported in production
+    // (Check all active funding sources)
+    const allFsCheck = await railDb.execute({
+      sql: "SELECT connector_type FROM funding_sources WHERE status = 'active'",
+      args: []
+    });
+    const hasSimulation = (allFsCheck.rows as any[]).some(
+      (r) => (r.connector_type || '') === 'simulation'
+    );
+    if (hasSimulation) {
+      res.status(400).json({
+        error: 'One or more active funding sources are using the deprecated "simulation" connector. Reconfigure them with "http_callback" or "web3_rpc" before confirming payments.',
+        code: 'simulation_connector_not_supported'
+      });
+      return;
+    }
+
+    // 2b. Run AML / OFAC compliance screening
+    const payerName = (req as any).tenant?.legal_name || 'Unknown Payer';
+    const payeeMeta = pi.metadata ? JSON.parse(pi.metadata as string) : {};
+    const payeeName = payeeMeta.payee_name || payeeMeta.recipient_name || 'Unknown Payee';
+
+    const complianceResult = await screenPayment(payerName, payeeName);
+    if (!complianceResult.passed) {
+      console.warn(`[Compliance] Payment ${pi.id} blocked: ${complianceResult.reason}`);
+      await railDb.execute({
+        sql: "UPDATE payment_intents SET status = 'failed' WHERE id = ?",
+        args: [id],
+      });
+      res.status(402).json({
+        success: false,
+        error: {
+          code: 'compliance_hold',
+          message: complianceResult.reason || 'Transaction blocked by compliance screening.',
+        },
+        compliance: complianceResult.results,
+      });
       return;
     }
 

@@ -53,6 +53,10 @@ function translateToPg(sql: string, args: any[] = []): { sql: string; args: any[
       pgSql += ' ON CONFLICT (id) DO NOTHING';
     } else if (pgSql.includes('notifications')) {
       pgSql += ' ON CONFLICT (id, tenant_id) DO NOTHING';
+    } else if (pgSql.includes('password_reset_tokens')) {
+      pgSql += ' ON CONFLICT (token) DO NOTHING';
+    } else if (pgSql.includes('security_questions')) {
+      pgSql += ' ON CONFLICT (user_id) DO NOTHING';
     }
   }
 
@@ -533,6 +537,27 @@ export async function initDb() {
       read INTEGER NOT NULL DEFAULT 0, -- 0 = unread, 1 = read
       created_at TEXT NOT NULL,
       PRIMARY KEY (id, tenant_id)
+    );
+  `);
+
+  // Create password_reset_tokens table (DB-backed, no external token store needed)
+  await vaultDb.execute(`
+    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+      token TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+  `);
+
+  // Create security_questions table (step-2 verification for password resets)
+  await vaultDb.execute(`
+    CREATE TABLE IF NOT EXISTS security_questions (
+      user_id TEXT PRIMARY KEY,
+      question_hash TEXT NOT NULL,
+      answer_hash TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     );
   `);
 
