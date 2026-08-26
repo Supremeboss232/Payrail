@@ -1370,20 +1370,20 @@ router.post('/ach/transfer', async (req: Request, res: Response) => {
     const now = new Date().toISOString();
     await railDb.execute({
       sql: `INSERT INTO payment_intents
-              (id, tenant_id, amount, currency, status, description, metadata, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
+              (id, amount, currency, status, destination_account_id, client_secret, metadata, created_at)
+            VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`,
       args: [
-        piId, tenant.id, Math.round(amount * 100), currency,
-        description || `ACH ${transfer_type.toUpperCase()} transfer`,
-        JSON.stringify({ recipient_account, recipient_routing, transfer_type, engine }),
-        now, now
+        piId, Math.round(amount * 100), currency,
+        recipient_account, `secret_${piId}`,
+        JSON.stringify({ tenant_id: tenant.id, recipient_routing, transfer_type, description, engine }),
+        now
       ]
     });
 
     // Mark settled immediately on internal rails (Fed ACH would batch and settle next business day)
     await railDb.execute({
-      sql: `UPDATE payment_intents SET status = 'settled', updated_at = ? WHERE id = ?`,
-      args: [new Date().toISOString(), piId]
+      sql: `UPDATE payment_intents SET status = 'settled' WHERE id = ?`,
+      args: [piId]
     });
 
     res.status(201).json({
@@ -1448,7 +1448,7 @@ router.post('/partners/register', async (req: Request, res: Response) => {
   }
 
   try {
-    const tenantId = `tenant_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const tenantId = uuidv4();
     const routingCode = bic_code || `PAYR${legal_name.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6)}XX`;
     const now = new Date().toISOString();
 
@@ -1496,8 +1496,8 @@ router.post('/partners/register', async (req: Request, res: Response) => {
         joined_at: now
       },
       api_key: {
-        key: apiKeyResult.key,
-        prefix: apiKeyResult.prefix,
+        key: apiKeyResult.rawKey,
+        prefix: apiKeyResult.key.prefix,
         note: 'Store this key securely — it will not be shown again. Use it as: Authorization: Bearer <key>'
       },
       services_activated: serviceList,

@@ -196,7 +196,7 @@ export async function authorizeCardTransaction(
   // Debit the card account
   const tx = await postTransaction(
     `Card purchase – ${merchant}`,
-    'card_authorization',
+    'api',
     [{ accountId: card.ledger_account_id, type: 'credit', amount, currency: card.currency }]
   );
 

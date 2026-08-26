@@ -146,8 +146,21 @@ export async function authenticateApiKey(req: Request, res: Response, next: Next
       return;
     }
 
-    // Attach key metadata if needed
-    (req as any).apiKey = result.rows[0];
+    const apiKeyObj = result.rows[0] as any;
+    (req as any).apiKey = apiKeyObj;
+
+    if (apiKeyObj.tenant_id) {
+      const tenantResult = await railDb.execute({
+        sql: `SELECT * FROM tenants WHERE id = ?`,
+        args: [apiKeyObj.tenant_id],
+      });
+      if (tenantResult.rows.length > 0) {
+        (req as any).tenant = tenantResult.rows[0];
+      } else {
+        (req as any).tenant = { id: apiKeyObj.tenant_id };
+      }
+    }
+
     next();
   } catch (error) {
     console.error('Authentication error:', error);

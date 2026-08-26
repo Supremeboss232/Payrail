@@ -57,6 +57,10 @@ function translateToPg(sql: string, args: any[] = []): { sql: string; args: any[
       pgSql += ' ON CONFLICT (token) DO NOTHING';
     } else if (pgSql.includes('security_questions')) {
       pgSql += ' ON CONFLICT (user_id) DO NOTHING';
+    } else if (pgSql.includes('partner_services')) {
+      pgSql += ' ON CONFLICT (tenant_id, service_id) DO NOTHING';
+    } else if (pgSql.includes('virtual_cards')) {
+      pgSql += ' ON CONFLICT (id, tenant_id) DO NOTHING';
     }
   }
 
@@ -564,8 +568,8 @@ export async function initDb() {
   // Virtual card issuance — ledger-backed cards, no Marqeta required
   await railDb.execute(`
     CREATE TABLE IF NOT EXISTS virtual_cards (
-      id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      tenant_id UUID NOT NULL,
       cardholder_name TEXT NOT NULL,
       pan_hash TEXT NOT NULL,
       pan_last4 TEXT NOT NULL,
@@ -579,14 +583,15 @@ export async function initDb() {
       spend_used REAL NOT NULL DEFAULT 0,
       ledger_account_id TEXT NOT NULL,
       purpose TEXT NOT NULL DEFAULT 'general',
-      issued_at TEXT NOT NULL
+      issued_at TEXT NOT NULL,
+      PRIMARY KEY (id, tenant_id)
     );
   `);
 
   // Partner service activation — which services each tenant has enabled
   await railDb.execute(`
     CREATE TABLE IF NOT EXISTS partner_services (
-      tenant_id TEXT NOT NULL,
+      tenant_id UUID NOT NULL,
       service_id TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
       activated_at TEXT NOT NULL,

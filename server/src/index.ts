@@ -806,6 +806,78 @@ app.post('/v1/auth/verify_security_question', async (req, res) => {
   }
 });
 
+// Public partner registration route (allows any new firm to onboard without an existing API key)
+app.post('/v1/partners/register', async (req, res) => {
+  const {
+    legal_name, bic_code, contact_email, country = 'US',
+    firm_type = 'private', services_requested = []
+  } = req.body;
+
+  if (!legal_name || !contact_email) {
+    res.status(400).json({ error: 'legal_name and contact_email are required.' });
+    return;
+  }
+
+  try {
+    const { v4: uuidv4 } = await import('uuid');
+    const tenantId = uuidv4();
+    const routingCode = bic_code || `PAYR${legal_name.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6)}XX`;
+    const now = new Date().toISOString();
+
+    await railDb.execute({
+      sql: `INSERT OR IGNORE INTO tenants
+              (id, legal_name, routing_code, public_key_pem, api_status, created_at)
+            VALUES (?, ?, ?, ?, 'active', ?)`,
+      args: [tenantId, legal_name, routingCode, contact_email, now]
+    });
+
+    const allServices = [
+      'fx_conversion', 'aml_screening', 'otp_verification', 'card_issuance',
+      'ach_wire', 'crypto_wallets', 'credit_bureau', 'settlement_clearing', 'payment_intents'
+    ];
+    const serviceList = services_requested.length > 0 ? services_requested : allServices;
+    for (const svcId of serviceList) {
+      await railDb.execute({
+        sql: `INSERT OR IGNORE INTO partner_services (tenant_id, service_id, status, activated_at)
+              VALUES (?, ?, 'active', ?)`,
+        args: [tenantId, svcId, now]
+      });
+    }
+
+    const { generateApiKey } = await import('./auth');
+    const apiKeyResult = await generateApiKey(`${legal_name} Default Key`, tenantId);
+
+    await createNotification(
+      systemTenantId,
+      'New Partner Registered',
+      `${legal_name} (${country}, ${firm_type}) joined the Payrail network. ${serviceList.length} services activated.`,
+      'success'
+    );
+
+    res.status(201).json({
+      success: true,
+      partner: {
+        tenant_id: tenantId,
+        legal_name,
+        routing_code: routingCode,
+        country,
+        firm_type,
+        status: 'active',
+        joined_at: now
+      },
+      api_key: {
+        key: apiKeyResult.rawKey,
+        prefix: apiKeyResult.key.prefix,
+        note: 'Store this key securely — it will not be shown again. Use it as: Authorization: Bearer <key>'
+      },
+      services_activated: serviceList,
+      welcome_message: `Welcome to the Payrail network, ${legal_name}! You now have access to ${serviceList.length} financial services. Call GET /v1/services/catalog to explore what's available.`
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: `Partner registration failed: ${err.message}` });
+  }
+});
+
 // Secure Stripe-like Gateway Router
 app.use('/v1', authenticateGateway, gatewayRouter);
 

@@ -44,12 +44,12 @@ async function fetchTxStats(tenantId: string): Promise<TxStats> {
   const statsResult = await railDb.execute({
     sql: `SELECT
             COUNT(*) as total_transactions,
-            COALESCE(SUM(CASE WHEN type = 'debit' THEN amount ELSE 0 END), 0) as total_volume_in,
-            COALESCE(SUM(CASE WHEN type = 'credit' THEN amount ELSE 0 END), 0) as total_volume_out,
-            MIN(created_at) as first_tx_date,
-            COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed_count,
-            COUNT(CASE WHEN amount > 1000000 THEN 1 END) as large_inflows
-          FROM ledger_entries le
+            COALESCE(SUM(CASE WHEN le.type = 'debit' THEN le.amount ELSE 0 END), 0) as total_volume_in,
+            COALESCE(SUM(CASE WHEN le.type = 'credit' THEN le.amount ELSE 0 END), 0) as total_volume_out,
+            MIN(le.created_at) as first_tx_date,
+            0 as failed_count,
+            COUNT(CASE WHEN le.amount > 1000000 THEN 1 END) as large_inflows
+          FROM entries le
           JOIN accounts a ON le.account_id = a.id
           WHERE a.tenant_id = ?`,
     args: [tenantId]
@@ -57,8 +57,8 @@ async function fetchTxStats(tenantId: string): Promise<TxStats> {
 
   // Payment intent success rate
   const piResult = await railDb.execute({
-    sql: `SELECT COUNT(*) as settlement_count FROM payment_intents WHERE tenant_id = ? AND status = 'settled'`,
-    args: [tenantId]
+    sql: `SELECT COUNT(*) as settlement_count FROM payment_intents WHERE status = 'settled'`,
+    args: []
   });
 
   const row = (statsResult.rows[0] as any) || {};
