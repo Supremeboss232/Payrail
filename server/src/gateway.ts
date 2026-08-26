@@ -836,4 +836,520 @@ router.post('/banks/test_connection', async (req: Request, res: Response) => {
   res.status(400).json({ error: `Unknown connector_type: ${connector_type}. Use http_callback or web3_rpc.` });
 });
 
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PAYRAIL BANKING-AS-A-SERVICE (BaaS) ROUTES
+//
+// These routes are exposed to authenticated MEMBER BANKS via their gateway API
+// keys. Payrail holds ONE upstream vendor contract and re-exposes the capability
+// to all tenants — this is exactly how Unit, Column, Synapse operate.
+//
+// Auth flow: Member Bank → API Key → authenticateGateway → BaaS Route → Vendor
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /v1/services/catalog
+// Returns the full list of Payrail BaaS services and their availability status
+// for the calling member bank.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/services/catalog', async (req: Request, res: Response) => {
+  const tenant = (req as any).tenant;
+
+  const services = [
+    {
+      id: 'fx_conversion',
+      name: 'FX Currency Conversion',
+      description: 'Real-time exchange rates and cross-currency conversion for multi-currency accounts.',
+      category: 'payments',
+      status: process.env.FIXER_IO_API_KEY ? 'available' : 'pending_activation',
+      endpoint: 'POST /v1/fx/convert',
+      docs_endpoint: 'GET /v1/fx/rates',
+      cost_model: 'Included in Payrail membership',
+      upstream_provider: 'Fixer.io'
+    },
+    {
+      id: 'aml_screening',
+      name: 'AML / OFAC Sanctions Screening',
+      description: 'Screen counterparties against OFAC SDN, PEP lists, and adverse media. SAR-ready risk reports.',
+      category: 'compliance',
+      status: 'available',
+      endpoint: 'POST /v1/compliance/screen',
+      cost_model: 'Included in Payrail membership',
+      upstream_provider: process.env.COMPLY_ADVANTAGE_API_KEY ? 'ComplyAdvantage' : 'OFAC SDN (Free Tier)'
+    },
+    {
+      id: 'otp_verification',
+      name: 'OTP / Email Verification',
+      description: 'Generate and deliver 6-digit OTP codes to your customers via email.',
+      category: 'identity',
+      status: process.env.SENDGRID_API_KEY ? 'available' : 'pending_activation',
+      endpoint: 'POST /v1/otp/send',
+      verify_endpoint: 'POST /v1/otp/verify',
+      cost_model: 'Included in Payrail membership',
+      upstream_provider: 'SendGrid'
+    },
+    {
+      id: 'card_issuance',
+      name: 'Card Issuance & Lifecycle Management',
+      description: 'Issue virtual and physical debit/credit cards. Full lifecycle: request → approve → activate → disputes.',
+      category: 'cards',
+      status: process.env.MARQETA_BASE_URL ? 'available' : 'contract_required',
+      endpoint: 'POST /v1/cards/issue',
+      cost_model: 'Interchange sharing + setup fee',
+      upstream_provider: 'Marqeta / Galileo',
+      setup_requirements: [
+        'Payrail signs card-network contract with Marqeta or Galileo ($10K–$50K)',
+        'Member bank receives card-issuing access via Payrail tenant BIN sponsorship',
+        'Timeline: 3–6 months after contract signing'
+      ]
+    },
+    {
+      id: 'ach_wire',
+      name: 'ACH / Fedwire Payment Rails',
+      description: 'Originate ACH debits/credits and Fedwire transfers on behalf of your customers.',
+      category: 'payments',
+      status: process.env.ACH_ROUTING_NUMBER ? 'available' : 'sponsorship_required',
+      endpoint: 'POST /v1/ach/transfer',
+      cost_model: 'Per-transaction fee',
+      upstream_provider: 'Federal Reserve / Correspondent Bank',
+      setup_requirements: [
+        'Payrail obtains ABA routing number via sponsor bank (Cross River Bank, Evolve Bank)',
+        'Member banks originate ACH via Payrail routing number',
+        'Timeline: 6–18 months regulatory process'
+      ]
+    },
+    {
+      id: 'crypto_wallets',
+      name: 'Crypto / Blockchain Wallet Management',
+      description: 'Create custodial wallets, route on-chain transactions, multi-chain USDC/ETH/BTC support.',
+      category: 'crypto',
+      status: process.env.CRYPTO_RPC_URL ? 'available' : 'pending_activation',
+      endpoint: 'POST /v1/crypto/transfer',
+      status_endpoint: 'GET /v1/crypto/status',
+      cost_model: 'Gas fees + network fee',
+      upstream_provider: 'EVM Web3 RPC (Alchemy/Infura/Fireblocks)',
+      note: 'FinCEN Money Services Business (MSB) registration required to offer this to customers.'
+    },
+    {
+      id: 'credit_bureau',
+      name: 'Credit Bureau Soft Pull',
+      description: 'Run soft credit inquiries for KYC, creditworthiness checks, and loan decisioning.',
+      category: 'identity',
+      status: process.env.EQUIFAX_CLIENT_ID ? 'available' : 'contract_required',
+      endpoint: 'POST /v1/credit/soft_pull',
+      cost_model: 'Per-inquiry fee',
+      upstream_provider: 'Equifax / Experian / TransUnion',
+      setup_requirements: [
+        'Payrail obtains bureau API access with FCRA compliance certification',
+        'Member banks access via Payrail permissioned sub-account',
+        'Timeline: 6–12 months'
+      ]
+    },
+    {
+      id: 'settlement_clearing',
+      name: 'Deferred Net Settlement (DNS) Clearing',
+      description: 'Multilateral clearing and settlement between member banks. ISO 20022 pacs.008/pacs.009 messages.',
+      category: 'settlement',
+      status: 'available',
+      endpoint: 'POST /v1/settlements/dns_sweep',
+      cost_model: 'Included in Payrail membership',
+      upstream_provider: 'Payrail Core Ledger'
+    },
+    {
+      id: 'payment_intents',
+      name: 'Payment Gateway (Stripe-Compatible)',
+      description: 'Create and confirm payment intents with dynamic funding source failover.',
+      category: 'payments',
+      status: 'available',
+      endpoint: 'POST /v1/payment_intents',
+      confirm_endpoint: 'POST /v1/payment_intents/:id/confirm',
+      cost_model: 'Included in Payrail membership',
+      upstream_provider: 'Payrail Gateway Router'
+    }
+  ];
+
+  const available = services.filter(s => s.status === 'available').length;
+
+  res.json({
+    tenant_id: tenant?.id || 'system',
+    tenant_name: tenant?.legal_name || 'Platform',
+    total_services: services.length,
+    available_services: available,
+    services
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /v1/fx/convert
+// Convert an amount from one currency to another using live Fixer.io rates.
+// Called by member banks to price cross-currency transactions.
+// ─────────────────────────────────────────────────────────────────────────────
+const fxGatewayCache: { rates: Record<string, number>; base: string; ts: number } = { rates: {}, base: '', ts: 0 };
+const FX_GATEWAY_TTL = 15 * 60 * 1000;
+
+router.post('/fx/convert', async (req: Request, res: Response) => {
+  const { from, to, amount } = req.body;
+
+  if (!from || !to || amount === undefined) {
+    res.status(400).json({ error: 'from, to, and amount are required.' });
+    return;
+  }
+  if (typeof amount !== 'number' || amount <= 0) {
+    res.status(400).json({ error: 'amount must be a positive number.' });
+    return;
+  }
+
+  const apiKey = process.env.FIXER_IO_API_KEY;
+  if (!apiKey) {
+    res.status(503).json({
+      error: 'FX service not yet activated on this network.',
+      code: 'service_pending_activation',
+      action: 'Contact your Payrail network administrator to activate the FX service.',
+      provider: 'Fixer.io'
+    });
+    return;
+  }
+
+  try {
+    // Refresh cache if stale
+    if (!fxGatewayCache.rates[to] || fxGatewayCache.base !== from || Date.now() - fxGatewayCache.ts > FX_GATEWAY_TTL) {
+      const res2 = await fetch(`https://data.fixer.io/api/latest?access_key=${apiKey}&base=${from}&symbols=${to}`);
+      const data = await res2.json() as any;
+      if (!data.success) throw new Error(`Fixer.io error: ${data.error?.info || 'Unknown'}`);
+      fxGatewayCache.rates = data.rates;
+      fxGatewayCache.base = from;
+      fxGatewayCache.ts = Date.now();
+    }
+
+    const rate = fxGatewayCache.rates[to];
+    if (!rate) {
+      res.status(400).json({ error: `Currency pair ${from}→${to} not supported.` });
+      return;
+    }
+
+    const convertedAmount = parseFloat((amount * rate).toFixed(6));
+
+    res.json({
+      from: from.toUpperCase(),
+      to: to.toUpperCase(),
+      input_amount: amount,
+      converted_amount: convertedAmount,
+      rate,
+      rate_source: 'fixer.io',
+      rate_timestamp: new Date(fxGatewayCache.ts).toISOString(),
+    });
+  } catch (err: any) {
+    res.status(502).json({ error: `FX conversion failed: ${err.message}` });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /v1/fx/rates
+// Get live exchange rates (gateway-authenticated version for member banks).
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/fx/rates', async (req: Request, res: Response) => {
+  const base = (req.query.base as string || 'USD').toUpperCase();
+  const symbols = req.query.symbols as string | undefined;
+  const apiKey = process.env.FIXER_IO_API_KEY;
+
+  if (!apiKey) {
+    res.status(503).json({
+      error: 'FX service not yet activated.',
+      code: 'service_pending_activation',
+      action: 'Contact your Payrail network administrator.'
+    });
+    return;
+  }
+
+  try {
+    const symbolParam = symbols ? `&symbols=${symbols}` : '';
+    const response = await fetch(`https://data.fixer.io/api/latest?access_key=${apiKey}&base=${base}${symbolParam}`);
+    const data = await response.json() as any;
+    if (!data.success) {
+      res.status(502).json({ error: `FX provider error: ${data.error?.info || 'Unknown'}` });
+      return;
+    }
+    res.json({ base: data.base, rates: data.rates, timestamp: new Date(data.timestamp * 1000).toISOString() });
+  } catch (err: any) {
+    res.status(502).json({ error: `FX rates unavailable: ${err.message}` });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /v1/compliance/screen
+// AML / OFAC screening as a service for member banks.
+// Member banks pass counterparty names; Payrail screens via its compliance engine.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/compliance/screen', async (req: Request, res: Response) => {
+  const { name, type = 'individual' } = req.body;
+
+  if (!name) {
+    res.status(400).json({ error: 'name is required.' });
+    return;
+  }
+
+  try {
+    const { screenParticipant } = await import('./compliance');
+    const result = await screenParticipant(name);
+
+    const tenantId = (req as any).tenant?.id || systemTenantId;
+
+    // Log screening result as a notification for audit trail
+    if (!result.passed) {
+      await createNotification(
+        systemTenantId,
+        'Compliance Screen — Potential Match',
+        `Member bank "${(req as any).tenant?.legal_name || tenantId}" screened "${name}": ${result.details || result.matchStatus}`,
+        'warning'
+      );
+    }
+
+    res.json({
+      name,
+      type,
+      passed: result.passed,
+      match_status: result.matchStatus,
+      engine: result.engine,
+      details: result.details || null,
+      screened_at: new Date().toISOString(),
+      screened_by_tenant: (req as any).tenant?.legal_name || 'system'
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: `Compliance screening failed: ${err.message}` });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /v1/otp/send
+// Generate and deliver a 6-digit OTP to an email address.
+// Member banks use this for their own customer verification flows.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// In-memory OTP store: { email → { code, expiresAt } }
+// In production this should be Redis — for now it's a process-scoped Map.
+const otpStore = new Map<string, { code: string; expiresAt: number; attempts: number }>();
+
+router.post('/otp/send', async (req: Request, res: Response) => {
+  const { email, purpose = 'verification' } = req.body;
+
+  if (!email || !email.includes('@')) {
+    res.status(400).json({ error: 'A valid email address is required.' });
+    return;
+  }
+
+  const sendGridKey = process.env.SENDGRID_API_KEY;
+  if (!sendGridKey) {
+    res.status(503).json({
+      error: 'Email OTP service not yet activated.',
+      code: 'service_pending_activation',
+      action: 'Contact your Payrail network administrator to activate email delivery.'
+    });
+    return;
+  }
+
+  try {
+    // Generate 6-digit OTP
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = Date.now() + 10 * 60 * 1000; // 10-minute TTL
+
+    // Store in memory (single-use, expires in 10 min)
+    otpStore.set(email, { code, expiresAt, attempts: 0 });
+
+    const fromEmail = process.env.SENDGRID_FROM_EMAIL || 'noreply@payrail.io';
+    const tenantName = (req as any).tenant?.legal_name || 'Payrail';
+
+    await fetch('https://api.sendgrid.com/v3/mail/send', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${sendGridKey}`
+      },
+      body: JSON.stringify({
+        personalizations: [{ to: [{ email }] }],
+        from: { email: fromEmail, name: tenantName },
+        subject: `Your ${tenantName} verification code`,
+        content: [{
+          type: 'text/plain',
+          value: `Your verification code is: ${code}\n\nThis code expires in 10 minutes.\nPurpose: ${purpose}`
+        }]
+      })
+    });
+
+    res.json({
+      success: true,
+      message: `OTP sent to ${email}`,
+      expires_in_seconds: 600,
+      purpose
+    });
+  } catch (err: any) {
+    res.status(502).json({ error: `OTP delivery failed: ${err.message}` });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /v1/otp/verify
+// Verify a previously issued OTP code. Single-use, 10-minute TTL enforced.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/otp/verify', async (req: Request, res: Response) => {
+  const { email, code } = req.body;
+
+  if (!email || !code) {
+    res.status(400).json({ error: 'email and code are required.' });
+    return;
+  }
+
+  const record = otpStore.get(email);
+
+  if (!record) {
+    res.status(400).json({ error: 'No OTP found for this email. Request a new one.', code: 'otp_not_found' });
+    return;
+  }
+
+  if (Date.now() > record.expiresAt) {
+    otpStore.delete(email);
+    res.status(400).json({ error: 'OTP has expired. Request a new one.', code: 'otp_expired' });
+    return;
+  }
+
+  record.attempts += 1;
+  if (record.attempts > 5) {
+    otpStore.delete(email);
+    res.status(429).json({ error: 'Too many failed attempts. Request a new OTP.', code: 'otp_locked' });
+    return;
+  }
+
+  if (record.code !== code.toString()) {
+    res.status(401).json({ error: 'Invalid OTP code.', attempts_remaining: 5 - record.attempts });
+    return;
+  }
+
+  // Valid — delete it (single-use)
+  otpStore.delete(email);
+  res.json({ success: true, verified: true, email });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /v1/cards/issue  (Stub — activates when MARQETA_BASE_URL is configured)
+// Issue a virtual or physical card for a customer on behalf of a member bank.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/cards/issue', async (req: Request, res: Response) => {
+  if (!process.env.MARQETA_BASE_URL) {
+    res.status(503).json({
+      error: 'Card issuance is not yet active on this Payrail network.',
+      code: 'service_contract_required',
+      service: 'card_issuance',
+      action: 'A card-network contract must be signed. Payrail is in discussions with Marqeta and Galileo.',
+      details: {
+        providers: ['Marqeta', 'Galileo Financial Technologies', 'Visa DPS'],
+        cost: '$10K–$50K setup + interchange sharing',
+        timeline: '3–6 months after contract signing',
+        how_it_works: 'Once activated, Payrail holds the BIN sponsorship and your bank issues cards under the Payrail program.'
+      }
+    });
+    return;
+  }
+  // TODO: Forward to Marqeta /v3/cards when contract is active
+  res.status(501).json({ error: 'Marqeta integration implementation pending.' });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /v1/ach/transfer  (Stub — activates when ACH_ROUTING_NUMBER is configured)
+// Originate ACH debits/credits on behalf of a member bank.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/ach/transfer', async (req: Request, res: Response) => {
+  if (!process.env.ACH_ROUTING_NUMBER) {
+    res.status(503).json({
+      error: 'ACH origination is not yet active on this Payrail network.',
+      code: 'service_sponsorship_required',
+      service: 'ach_wire',
+      action: 'Payrail must obtain a Federal Reserve ACH origination agreement via a sponsor bank.',
+      details: {
+        path: 'Obtain ABA routing number via sponsor bank (Cross River Bank, Evolve Bank, or Blue Ridge Bank)',
+        how_it_works: 'Payrail becomes the ODFI (Originating Depository Financial Institution). Your bank originates ACH under Payrail\'s routing number.',
+        timeline: '6–18 months — very complex regulatory process',
+        note: 'Once active, your bank sends ACH batches to Payrail, and Payrail forwards to the Fed.'
+      }
+    });
+    return;
+  }
+  // TODO: Forward to Fed ACH SFTP/API when origination agreement is active
+  res.status(501).json({ error: 'Fed ACH integration implementation pending.' });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /v1/credit/soft_pull  (Stub — activates when EQUIFAX_CLIENT_ID is configured)
+// Run a soft credit inquiry for KYC / creditworthiness via Payrail's bureau access.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/credit/soft_pull', async (req: Request, res: Response) => {
+  if (!process.env.EQUIFAX_CLIENT_ID) {
+    res.status(503).json({
+      error: 'Credit bureau access is not yet active on this Payrail network.',
+      code: 'service_contract_required',
+      service: 'credit_bureau',
+      action: 'Payrail must obtain FCRA-compliant bureau API access.',
+      details: {
+        providers: ['Equifax', 'Experian', 'TransUnion'],
+        requirements: ['FCRA compliance certification', 'Enterprise bureau contract', 'Data security audit'],
+        how_it_works: 'Payrail holds the permissioned bureau account. Your bank submits inquiry requests and receives soft-pull credit reports.',
+        timeline: '6–12 months'
+      }
+    });
+    return;
+  }
+  // TODO: Forward to Equifax Verification API when access is active
+  res.status(501).json({ error: 'Equifax integration implementation pending.' });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /v1/crypto/transfer
+// Execute an on-chain token transfer via Web3 RPC on behalf of a member bank.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/crypto/transfer', async (req: Request, res: Response) => {
+  const { to_address, amount, currency = 'USDC' } = req.body;
+
+  if (!process.env.CRYPTO_RPC_URL) {
+    res.status(503).json({
+      error: 'Crypto rail is not yet active on this Payrail network.',
+      code: 'service_pending_activation',
+      service: 'crypto_wallets',
+      action: 'Configure CRYPTO_RPC_URL in your Payrail network settings.',
+      details: {
+        providers: ['Alchemy', 'Infura', 'QuickNode', 'Fireblocks', 'BitGo'],
+        how_it_works: 'Payrail holds custody of a network hot wallet. Your bank submits on-chain transfer requests and Payrail executes them.',
+        note: 'FinCEN MSB registration required to offer crypto services to your customers.'
+      }
+    });
+    return;
+  }
+
+  if (!to_address || !amount) {
+    res.status(400).json({ error: 'to_address and amount are required.' });
+    return;
+  }
+
+  // Forward to the real Web3 RPC integration
+  try {
+    const { executeWeb3RpcTransfer } = await import('./integrations');
+    const { decryptCredentials } = await import('./crypto');
+
+    // Use Payrail's platform crypto config (set via CRYPTO_PRIVATE_KEY / CRYPTO_CONTRACT_ADDRESS)
+    const platformConfig = {
+      rpc_url: process.env.CRYPTO_RPC_URL,
+      private_key: process.env.CRYPTO_PRIVATE_KEY,
+      contract_address: process.env.CRYPTO_CONTRACT_ADDRESS,
+      destination_address: to_address
+    };
+
+    if (!platformConfig.private_key) {
+      res.status(503).json({ error: 'CRYPTO_PRIVATE_KEY not configured on this Payrail network.' });
+      return;
+    }
+
+    const txHash = await executeWeb3RpcTransfer(platformConfig, Math.round(amount * 100), currency);
+    res.json({ success: true, tx_hash: txHash, to_address, amount, currency });
+  } catch (err: any) {
+    res.status(502).json({ error: `Crypto transfer failed: ${err.message}` });
+  }
+});
+
 export default router;

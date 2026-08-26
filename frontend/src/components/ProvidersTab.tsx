@@ -1,6 +1,10 @@
 import { useState, useEffect } from 'react';
 import { API_BASE_URL } from '../App';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
+
 interface ProviderInfo {
   name: string;
   status: string;
@@ -19,11 +23,30 @@ interface ProvidersStatus {
   providers: Record<string, ProviderInfo>;
 }
 
+interface CatalogService {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  status: string;
+  endpoint?: string;
+  cost_model?: string;
+  upstream_provider?: string;
+  setup_requirements?: string[];
+  note?: string;
+}
+
+interface ServiceCatalog {
+  tenant_id: string;
+  tenant_name: string;
+  total_services: number;
+  available_services: number;
+  services: CatalogService[];
+}
+
 interface FxRate {
   base: string;
   rates: Record<string, number>;
-  source: string;
-  cached: boolean;
   timestamp: string;
 }
 
@@ -35,63 +58,86 @@ interface CryptoStatus {
   error?: string;
 }
 
-const STATUS_CONFIG: Record<string, { color: string; bg: string; icon: string; label: string }> = {
-  active:                  { color: '#10b981', bg: 'rgba(16,185,129,0.12)', icon: '✅', label: 'Active' },
-  pending_configuration:   { color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', icon: '⚙️', label: 'Configure' },
-  contract_required:       { color: '#8b5cf6', bg: 'rgba(139,92,246,0.12)', icon: '📋', label: 'Contract Required' },
-  sponsorship_required:    { color: '#6366f1', bg: 'rgba(99,102,241,0.12)', icon: '🏛️', label: 'Sponsorship Required' },
-  connected:               { color: '#10b981', bg: 'rgba(16,185,129,0.12)', icon: '⛓️', label: 'Connected' },
-  degraded:                { color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', icon: '⚠️', label: 'Degraded' },
-  unreachable:             { color: '#ef4444', bg: 'rgba(239,68,68,0.12)',  icon: '❌', label: 'Unreachable' },
+// ─────────────────────────────────────────────────────────────────────────────
+// Config maps
+// ─────────────────────────────────────────────────────────────────────────────
+
+const STATUS_CFG: Record<string, { color: string; bg: string; dot: string; label: string }> = {
+  active:                { color: '#10b981', bg: 'rgba(16,185,129,0.12)', dot: '#10b981', label: 'Active' },
+  available:             { color: '#10b981', bg: 'rgba(16,185,129,0.12)', dot: '#10b981', label: 'Available' },
+  pending_configuration: { color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', dot: '#f59e0b', label: 'Configure' },
+  pending_activation:    { color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', dot: '#f59e0b', label: 'Pending Activation' },
+  contract_required:     { color: '#8b5cf6', bg: 'rgba(139,92,246,0.12)', dot: '#8b5cf6', label: 'Contract Required' },
+  sponsorship_required:  { color: '#6366f1', bg: 'rgba(99,102,241,0.12)', dot: '#6366f1', label: 'Sponsorship Required' },
+  connected:             { color: '#10b981', bg: 'rgba(16,185,129,0.12)', dot: '#10b981', label: 'Connected' },
+  degraded:              { color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', dot: '#f59e0b', label: 'Degraded' },
+  unreachable:           { color: '#ef4444', bg: 'rgba(239,68,68,0.12)',  dot: '#ef4444', label: 'Unreachable' },
 };
 
 const PROVIDER_ICONS: Record<string, string> = {
-  fx_rates:           '💱',
-  email_otp:          '✉️',
-  aml_screening:      '🛡️',
-  crypto_rails:       '₿',
-  card_issuance:      '💳',
-  ach_wire:           '🏦',
-  credit_bureau:      '📊',
-  password_reset:     '🔑',
-  security_questions: '🔐',
+  fx_rates: '💱', email_otp: '✉️', aml_screening: '🛡️',
+  crypto_rails: '₿', card_issuance: '💳', ach_wire: '🏦',
+  credit_bureau: '📊', password_reset: '🔑', security_questions: '🔐',
+};
+
+const CATALOG_ICONS: Record<string, string> = {
+  fx_conversion: '💱', aml_screening: '🛡️', otp_verification: '✉️',
+  card_issuance: '💳', ach_wire: '🏦', crypto_wallets: '₿',
+  credit_bureau: '📊', settlement_clearing: '⚡', payment_intents: '🚀',
+};
+
+const CATEGORY_COLORS: Record<string, string> = {
+  payments: '#3b82f6', compliance: '#f59e0b', identity: '#8b5cf6',
+  cards: '#ec4899', crypto: '#10b981', settlement: '#06b6d4',
 };
 
 const COMMON_CURRENCIES = ['EUR', 'GBP', 'NGN', 'GHS', 'ZAR', 'JPY', 'CAD', 'AUD', 'CHF', 'CNY'];
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-components
+// ─────────────────────────────────────────────────────────────────────────────
+
 function StatusBadge({ status }: { status: string }) {
-  const cfg = STATUS_CONFIG[status] || { color: '#64748b', bg: 'rgba(100,116,139,0.12)', icon: '•', label: status };
+  const cfg = STATUS_CFG[status] || { color: '#64748b', bg: 'rgba(100,116,139,0.12)', dot: '#64748b', label: status };
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: '5px',
       padding: '3px 10px', borderRadius: '999px',
       background: cfg.bg, color: cfg.color,
-      fontSize: '12px', fontWeight: 600, letterSpacing: '0.02em'
+      fontSize: '11px', fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase'
     }}>
-      {cfg.icon} {cfg.label}
+      <span style={{ width: 6, height: 6, borderRadius: '50%', background: cfg.dot, display: 'inline-block' }} />
+      {cfg.label}
     </span>
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Main Component
+// ─────────────────────────────────────────────────────────────────────────────
+
 export default function ProvidersTab() {
+  const [activeView, setActiveView] = useState<'catalog' | 'infrastructure'>('catalog');
   const [status, setStatus] = useState<ProvidersStatus | null>(null);
+  const [catalog, setCatalog] = useState<ServiceCatalog | null>(null);
   const [fxRates, setFxRates] = useState<FxRate | null>(null);
   const [cryptoStatus, setCryptoStatus] = useState<CryptoStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [fxLoading, setFxLoading] = useState(false);
-  const [cryptoLoading, setCryptoLoading] = useState(false);
-  const [selectedCurrencies, setSelectedCurrencies] = useState<string[]>(['EUR', 'GBP', 'NGN', 'GHS']);
+  const [selectedCurrencies, setSelectedCurrencies] = useState(['EUR', 'GBP', 'NGN', 'GHS']);
+  const [expandedService, setExpandedService] = useState<string | null>(null);
 
-  const fetchStatus = async () => {
+  const fetchAll = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/v1/providers/status`);
-      if (res.ok) setStatus(await res.json());
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
+      const [statusRes, catalogRes] = await Promise.all([
+        fetch(`${API_BASE_URL}/v1/providers/status`),
+        fetch(`${API_BASE_URL}/v1/services/catalog`),
+      ]);
+      if (statusRes.ok) setStatus(await statusRes.json());
+      if (catalogRes.ok) setCatalog(await catalogRes.json());
+    } catch (e) { console.error(e); }
+    setLoading(false);
   };
 
   const fetchFxRates = async () => {
@@ -99,229 +145,331 @@ export default function ProvidersTab() {
     try {
       const symbols = selectedCurrencies.join(',');
       const res = await fetch(`${API_BASE_URL}/v1/fx/rates?base=USD&symbols=${symbols}`);
-      const data = await res.json();
-      if (res.ok) setFxRates(data);
-      else setFxRates(null);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setFxLoading(false);
-    }
+      if (res.ok) setFxRates(await res.json());
+    } catch (e) { console.error(e); }
+    setFxLoading(false);
   };
 
-  const fetchCryptoStatus = async () => {
-    setCryptoLoading(true);
+  const fetchCrypto = async () => {
     try {
       const res = await fetch(`${API_BASE_URL}/v1/crypto/status`);
-      const data = await res.json();
-      setCryptoStatus(data);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setCryptoLoading(false);
-    }
+      if (res.ok) setCryptoStatus(await res.json());
+    } catch (e) { console.error(e); }
   };
 
-  useEffect(() => {
-    fetchStatus();
-    fetchFxRates();
-    fetchCryptoStatus();
-  }, []);
+  useEffect(() => { fetchAll(); fetchFxRates(); fetchCrypto(); }, []);
 
-  const toggleCurrency = (c: string) => {
-    setSelectedCurrencies(prev =>
-      prev.includes(c) ? prev.filter(x => x !== c) : [...prev, c]
-    );
-  };
+  const toggleCurrency = (c: string) =>
+    setSelectedCurrencies(prev => prev.includes(c) ? prev.filter(x => x !== c) : [...prev, c]);
 
   if (loading) {
     return (
-      <div className="tab-loading">
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, padding: 60 }}>
         <div className="loading-spinner" />
-        <p>Loading provider status...</p>
+        <p style={{ color: 'var(--text-muted)' }}>Loading service catalog...</p>
       </div>
     );
   }
 
   const providers = status?.providers || {};
+  const services = catalog?.services || [];
+  const availableCount = catalog?.available_services || 0;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '28px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
 
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+      {/* ─── Header ─── */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <h2 style={{ fontSize: '22px', fontWeight: 700, margin: 0 }}>Provider Services</h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '14px', marginTop: '4px' }}>
-            Live status of all integrated financial service providers
+          <h2 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Payrail Services</h2>
+          <p style={{ color: 'var(--text-secondary)', fontSize: 14, marginTop: 4 }}>
+            Payrail acts as your financial middleware — one contract with each vendor, shared across all member banks.
           </p>
         </div>
-        <button className="button button-secondary" onClick={() => { fetchStatus(); fetchFxRates(); fetchCryptoStatus(); }}
-          style={{ fontSize: '13px' }}>
+        <button className="button button-secondary" onClick={() => { fetchAll(); fetchFxRates(); fetchCrypto(); }} style={{ fontSize: 13 }}>
           🔄 Refresh All
         </button>
       </div>
 
-      {/* Provider Grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '16px' }}>
-        {Object.entries(providers).map(([key, p]) => (
-          <div key={key} className="glass-panel" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <span style={{ fontSize: '24px' }}>{PROVIDER_ICONS[key] || '🔌'}</span>
-                <span style={{ fontWeight: 600, fontSize: '15px' }}>{p.name}</span>
+      {/* ─── Network Summary Strip ─── */}
+      <div style={{
+        display: 'flex', gap: 16, padding: '16px 24px',
+        borderRadius: 14, flexWrap: 'wrap',
+        background: 'linear-gradient(135deg, rgba(99,102,241,0.15), rgba(16,185,129,0.1))',
+        border: '1px solid rgba(99,102,241,0.2)'
+      }}>
+        {[
+          { label: 'Total Services', value: catalog?.total_services || services.length, icon: '🔌' },
+          { label: 'Available Now', value: availableCount, icon: '✅', color: '#10b981' },
+          { label: 'Activation Required', value: services.filter(s => s.status === 'pending_activation').length, icon: '⚙️', color: '#f59e0b' },
+          { label: 'Contract / Sponsorship', value: services.filter(s => s.status.includes('required')).length, icon: '📋', color: '#8b5cf6' },
+        ].map(stat => (
+          <div key={stat.label} style={{ display: 'flex', alignItems: 'center', gap: 10, flex: '1 1 140px' }}>
+            <span style={{ fontSize: 26 }}>{stat.icon}</span>
+            <div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: stat.color || 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
+                {stat.value}
               </div>
-              <StatusBadge status={p.status} />
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                {stat.label}
+              </div>
             </div>
-
-            <div style={{ fontSize: '13px', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '5px' }}>
-              {p.engine && <div>⚙️ Engine: <strong style={{ color: 'var(--text-primary)' }}>{p.engine}</strong></div>}
-              {p.cost && <div>💰 Cost: {p.cost}</div>}
-              {p.timeline && <div>⏱️ Timeline: {p.timeline}</div>}
-              {p.sdn_entries_cached !== undefined && (
-                <div>🗂️ SDN entries: <strong style={{ color: 'var(--text-primary)' }}>{p.sdn_entries_cached.toLocaleString()}</strong></div>
-              )}
-              {p.last_refreshed && (
-                <div>🕐 Last refresh: {new Date(p.last_refreshed).toLocaleTimeString()}</div>
-              )}
-            </div>
-
-            {(p.setup_url || p.upgrade_url) && !p.configured && (
-              <a
-                href={p.setup_url || p.upgrade_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="button"
-                style={{ fontSize: '12px', textAlign: 'center', textDecoration: 'none', padding: '8px 14px' }}
-              >
-                {p.status === 'active' ? '🔗 View Docs' : p.status === 'contract_required' || p.status === 'sponsorship_required' ? '📋 Learn More' : '🚀 Set Up'}
-              </a>
-            )}
-            {p.upgrade_url && p.configured && (
-              <a href={p.upgrade_url} target="_blank" rel="noopener noreferrer"
-                style={{ fontSize: '12px', color: 'var(--text-muted)', textDecoration: 'underline' }}>
-                Upgrade to {p.engine}
-              </a>
-            )}
           </div>
         ))}
       </div>
 
-      {/* FX Rate Live Panel */}
-      <div className="glass-panel" style={{ padding: '24px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-          <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600 }}>💱 Live FX Exchange Rates</h3>
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-            {fxRates && (
-              <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                {fxRates.cached ? '🗄️ Cached' : '🔴 Live'} · {new Date(fxRates.timestamp).toLocaleTimeString()}
-              </span>
-            )}
-            <button className="button button-secondary" onClick={fetchFxRates} disabled={fxLoading}
-              style={{ fontSize: '12px', padding: '6px 12px' }}>
-              {fxLoading ? '⏳' : '🔄'} Refresh
-            </button>
-          </div>
-        </div>
-
-        {/* Currency selector */}
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '16px' }}>
-          {COMMON_CURRENCIES.map(c => (
-            <button key={c}
-              onClick={() => toggleCurrency(c)}
-              style={{
-                padding: '4px 12px', borderRadius: '999px', fontSize: '12px', fontWeight: 600,
-                border: `1.5px solid ${selectedCurrencies.includes(c) ? 'var(--accent-primary)' : 'var(--border-color)'}`,
-                background: selectedCurrencies.includes(c) ? 'var(--accent-primary)' : 'transparent',
-                color: selectedCurrencies.includes(c) ? '#fff' : 'var(--text-secondary)',
-                cursor: 'pointer', transition: 'all 0.15s'
-              }}>
-              {c}
-            </button>
-          ))}
-          <button onClick={fetchFxRates} className="button" style={{ fontSize: '12px', padding: '4px 14px' }}>
-            Apply
+      {/* ─── View Switcher ─── */}
+      <div style={{ display: 'flex', gap: 4, background: 'var(--surface-secondary)', padding: 4, borderRadius: 10, width: 'fit-content' }}>
+        {[
+          { key: 'catalog', label: '🗂️ Service Catalog', sub: 'Member bank view' },
+          { key: 'infrastructure', label: '⚙️ Infrastructure', sub: 'Admin vendor view' },
+        ].map(tab => (
+          <button key={tab.key}
+            onClick={() => setActiveView(tab.key as any)}
+            style={{
+              padding: '10px 20px', borderRadius: 8, border: 'none', cursor: 'pointer',
+              background: activeView === tab.key ? 'var(--surface-primary)' : 'transparent',
+              color: activeView === tab.key ? 'var(--text-primary)' : 'var(--text-muted)',
+              fontWeight: activeView === tab.key ? 700 : 500,
+              fontSize: 14, transition: 'all 0.15s',
+              boxShadow: activeView === tab.key ? '0 1px 4px rgba(0,0,0,0.2)' : 'none',
+            }}>
+            {tab.label}
           </button>
-        </div>
+        ))}
+      </div>
 
-        {fxRates ? (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '12px' }}>
-            {Object.entries(fxRates.rates).map(([currency, rate]) => (
-              <div key={currency} style={{
-                background: 'var(--surface-secondary)', borderRadius: '10px', padding: '14px 16px',
-                display: 'flex', flexDirection: 'column', gap: '4px'
+      {/* ═══════════════════════════════════════════════════════
+          VIEW: SERVICE CATALOG (what member banks see)
+          ═══════════════════════════════════════════════════════ */}
+      {activeView === 'catalog' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <p style={{ color: 'var(--text-secondary)', fontSize: 13, margin: 0 }}>
+            These are the services your member banks can consume from Payrail via their gateway API key.
+            Payrail handles all upstream vendor contracts — banks just call the endpoint.
+          </p>
+
+          {services.map(service => {
+            const isExpanded = expandedService === service.id;
+            const icon = CATALOG_ICONS[service.id] || '🔧';
+            const categoryColor = CATEGORY_COLORS[service.category] || '#64748b';
+
+            return (
+              <div key={service.id} className="glass-panel" style={{
+                padding: '0', overflow: 'hidden',
+                border: isExpanded ? `1px solid ${categoryColor}40` : '1px solid var(--border-color)',
+                transition: 'border-color 0.2s'
               }}>
-                <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 600, letterSpacing: '0.08em' }}>
-                  USD → {currency}
-                </span>
-                <span style={{ fontSize: '20px', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
-                  {rate.toFixed(4)}
-                </span>
+                {/* Row header */}
+                <div
+                  onClick={() => setExpandedService(isExpanded ? null : service.id)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 16, padding: '18px 24px',
+                    cursor: 'pointer', userSelect: 'none',
+                    background: isExpanded ? `${categoryColor}08` : 'transparent'
+                  }}>
+                  <span style={{
+                    fontSize: 24, width: 44, height: 44, display: 'flex', alignItems: 'center',
+                    justifyContent: 'center', borderRadius: 10,
+                    background: `${categoryColor}15`, flexShrink: 0
+                  }}>{icon}</span>
+
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                      <span style={{ fontWeight: 700, fontSize: 15 }}>{service.name}</span>
+                      <span style={{
+                        padding: '2px 8px', borderRadius: 999, fontSize: 10, fontWeight: 700,
+                        background: `${categoryColor}20`, color: categoryColor, textTransform: 'uppercase', letterSpacing: '0.05em'
+                      }}>{service.category}</span>
+                    </div>
+                    <div style={{ color: 'var(--text-secondary)', fontSize: 13, marginTop: 2 }}>
+                      {service.description}
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+                    <StatusBadge status={service.status} />
+                    <span style={{ color: 'var(--text-muted)', fontSize: 18, transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>
+                      ›
+                    </span>
+                  </div>
+                </div>
+
+                {/* Expanded detail */}
+                {isExpanded && (
+                  <div style={{
+                    padding: '0 24px 20px',
+                    borderTop: `1px solid ${categoryColor}20`,
+                    display: 'flex', flexDirection: 'column', gap: 16
+                  }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12, marginTop: 16 }}>
+                      {service.endpoint && (
+                        <div style={{ background: 'var(--surface-secondary)', borderRadius: 8, padding: '12px 14px' }}>
+                          <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Endpoint</div>
+                          <code style={{ fontSize: 12, color: '#10b981', fontFamily: 'var(--font-mono)' }}>{service.endpoint}</code>
+                        </div>
+                      )}
+                      {service.upstream_provider && (
+                        <div style={{ background: 'var(--surface-secondary)', borderRadius: 8, padding: '12px 14px' }}>
+                          <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Upstream Vendor</div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{service.upstream_provider}</div>
+                        </div>
+                      )}
+                      {service.cost_model && (
+                        <div style={{ background: 'var(--surface-secondary)', borderRadius: 8, padding: '12px 14px' }}>
+                          <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Cost to Member Bank</div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: '#10b981' }}>{service.cost_model}</div>
+                        </div>
+                      )}
+                    </div>
+
+                    {service.setup_requirements && (
+                      <div>
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+                          What Payrail needs to activate this service:
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          {service.setup_requirements.map((req, i) => (
+                            <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                              <span style={{ color: '#8b5cf6', fontWeight: 700, marginTop: 2, flexShrink: 0 }}>{i + 1}.</span>
+                              <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{req}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {service.note && (
+                      <div style={{
+                        background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.25)',
+                        borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#f59e0b'
+                      }}>
+                        ⚠️ {service.note}
+                      </div>
+                    )}
+
+                    {service.status === 'available' && (
+                      <div style={{
+                        background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.2)',
+                        borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#10b981', fontFamily: 'var(--font-mono)'
+                      }}>
+                        ✅ Ready — member banks can call <strong>{service.endpoint}</strong> using their gateway API key.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════
+          VIEW: INFRASTRUCTURE (admin vendor status)
+          ═══════════════════════════════════════════════════════ */}
+      {activeView === 'infrastructure' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+
+          {/* Vendor grid */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(290px, 1fr))', gap: 14 }}>
+            {Object.entries(providers).map(([key, p]) => (
+              <div key={key} className="glass-panel" style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span style={{ fontSize: 22 }}>{PROVIDER_ICONS[key] || '🔌'}</span>
+                    <span style={{ fontWeight: 600, fontSize: 14 }}>{p.name}</span>
+                  </div>
+                  <StatusBadge status={p.status} />
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  {p.engine && <div>⚙️ <strong style={{ color: 'var(--text-primary)' }}>{p.engine}</strong></div>}
+                  {p.cost && <div>💰 {p.cost}</div>}
+                  {p.sdn_entries_cached !== undefined && (
+                    <div>🗂️ SDN entries: <strong style={{ color: 'var(--text-primary)' }}>{p.sdn_entries_cached.toLocaleString()}</strong></div>
+                  )}
+                  {p.last_refreshed && (
+                    <div>🕐 Refreshed: {new Date(p.last_refreshed).toLocaleTimeString()}</div>
+                  )}
+                </div>
+                {!p.configured && p.setup_url && (
+                  <a href={p.setup_url} target="_blank" rel="noopener noreferrer"
+                    className="button" style={{ fontSize: 12, textAlign: 'center', textDecoration: 'none', padding: '7px 14px' }}>
+                    🚀 Set Up {p.engine || 'Vendor'}
+                  </a>
+                )}
               </div>
             ))}
           </div>
-        ) : (
-          <div style={{ color: 'var(--text-muted)', fontSize: '14px', padding: '12px 0' }}>
-            {providers.fx_rates?.configured === false
-              ? '⚙️ Set FIXER_IO_API_KEY in your .env file to enable live FX rates.'
-              : 'Loading rates...'}
-          </div>
-        )}
-      </div>
 
-      {/* Crypto Node Status Panel */}
-      <div className="glass-panel" style={{ padding: '24px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-          <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600 }}>₿ Crypto / Web3 Rail Status</h3>
-          <button className="button button-secondary" onClick={fetchCryptoStatus} disabled={cryptoLoading}
-            style={{ fontSize: '12px', padding: '6px 12px' }}>
-            {cryptoLoading ? '⏳' : '🔄'} Ping Node
-          </button>
-        </div>
-
-        {cryptoStatus ? (
-          <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
-            <div style={{ background: 'var(--surface-secondary)', borderRadius: '10px', padding: '14px 20px', minWidth: '140px' }}>
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 600, marginBottom: '4px' }}>Status</div>
-              <StatusBadge status={cryptoStatus.status} />
+          {/* FX Rates Live Panel */}
+          <div className="glass-panel" style={{ padding: 24 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>💱 Live FX Rates (via Fixer.io)</h3>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                {fxRates && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>🕐 {new Date(fxRates.timestamp).toLocaleTimeString()}</span>}
+                <button className="button button-secondary" onClick={fetchFxRates} disabled={fxLoading} style={{ fontSize: 12, padding: '6px 12px' }}>
+                  {fxLoading ? '⏳' : '🔄'} Refresh
+                </button>
+              </div>
             </div>
-            {cryptoStatus.block_number && (
-              <div style={{ background: 'var(--surface-secondary)', borderRadius: '10px', padding: '14px 20px', minWidth: '140px' }}>
-                <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 600, marginBottom: '4px' }}>Block Number</div>
-                <div style={{ fontSize: '18px', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>
-                  #{cryptoStatus.block_number.toLocaleString()}
-                </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+              {COMMON_CURRENCIES.map(c => (
+                <button key={c} onClick={() => toggleCurrency(c)} style={{
+                  padding: '3px 11px', borderRadius: 999, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  border: `1.5px solid ${selectedCurrencies.includes(c) ? 'var(--accent-primary)' : 'var(--border-color)'}`,
+                  background: selectedCurrencies.includes(c) ? 'var(--accent-primary)' : 'transparent',
+                  color: selectedCurrencies.includes(c) ? '#fff' : 'var(--text-secondary)', transition: 'all 0.15s'
+                }}>{c}</button>
+              ))}
+              <button onClick={fetchFxRates} className="button" style={{ fontSize: 12, padding: '3px 12px' }}>Apply</button>
+            </div>
+            {fxRates ? (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: 10 }}>
+                {Object.entries(fxRates.rates).map(([currency, rate]) => (
+                  <div key={currency} style={{ background: 'var(--surface-secondary)', borderRadius: 10, padding: '12px 14px' }}>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.08em', marginBottom: 4 }}>
+                      USD → {currency}
+                    </div>
+                    <div style={{ fontSize: 18, fontWeight: 700, fontFamily: 'var(--font-mono)' }}>
+                      {rate.toFixed(4)}
+                    </div>
+                  </div>
+                ))}
               </div>
-            )}
-            {cryptoStatus.latency_ms > 0 && (
-              <div style={{ background: 'var(--surface-secondary)', borderRadius: '10px', padding: '14px 20px', minWidth: '140px' }}>
-                <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 600, marginBottom: '4px' }}>Latency</div>
-                <div style={{ fontSize: '18px', fontWeight: 700, fontFamily: 'var(--font-mono)', color: cryptoStatus.latency_ms < 200 ? '#10b981' : '#f59e0b' }}>
-                  {cryptoStatus.latency_ms}ms
-                </div>
+            ) : (
+              <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>
+                Set <code style={{ fontFamily: 'var(--font-mono)' }}>FIXER_IO_API_KEY</code> in .env to enable live FX rates.
               </div>
-            )}
-            {cryptoStatus.rpc_url && (
-              <div style={{ background: 'var(--surface-secondary)', borderRadius: '10px', padding: '14px 20px', flex: 1 }}>
-                <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 600, marginBottom: '4px' }}>RPC Node</div>
-                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '13px', color: 'var(--text-secondary)' }}>
-                  {cryptoStatus.rpc_url}
-                </div>
-              </div>
-            )}
-            {cryptoStatus.error && (
-              <div style={{ color: '#ef4444', fontSize: '14px', padding: '8px 0' }}>⚠️ {cryptoStatus.error}</div>
             )}
           </div>
-        ) : (
-          <div style={{ color: 'var(--text-muted)', fontSize: '14px' }}>
-            {providers.crypto_rails?.configured === false
-              ? '⚙️ Set CRYPTO_RPC_URL in your .env to monitor the Web3 node.'
-              : 'Checking node...'}
-          </div>
-        )}
-      </div>
 
+          {/* Crypto Node Status */}
+          <div className="glass-panel" style={{ padding: 24 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>₿ Crypto / Web3 Node Status</h3>
+              <button className="button button-secondary" onClick={fetchCrypto} style={{ fontSize: 12, padding: '6px 12px' }}>🔄 Ping</button>
+            </div>
+            {cryptoStatus ? (
+              <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+                {[
+                  { label: 'Status', value: <StatusBadge status={cryptoStatus.status} /> },
+                  cryptoStatus.block_number ? { label: 'Block #', value: <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>#{cryptoStatus.block_number.toLocaleString()}</span> } : null,
+                  cryptoStatus.latency_ms > 0 ? { label: 'Latency', value: <span style={{ fontFamily: 'var(--font-mono)', color: cryptoStatus.latency_ms < 200 ? '#10b981' : '#f59e0b', fontWeight: 700 }}>{cryptoStatus.latency_ms}ms</span> } : null,
+                ].filter(Boolean).map((item: any) => (
+                  <div key={item.label} style={{ background: 'var(--surface-secondary)', borderRadius: 10, padding: '12px 16px', minWidth: 120 }}>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>{item.label}</div>
+                    {item.value}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>
+                Set <code style={{ fontFamily: 'var(--font-mono)' }}>CRYPTO_RPC_URL</code> in .env to monitor the Web3 node.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
