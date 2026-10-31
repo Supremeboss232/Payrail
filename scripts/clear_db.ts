@@ -12,6 +12,9 @@ async function clearDb() {
     console.log('Wiping Vault Database...');
     await vaultDb.execute('DELETE FROM webhook_delivery_logs');
     await vaultDb.execute('DELETE FROM webhook_endpoints');
+    await vaultDb.execute('DELETE FROM password_reset_tokens');
+    await vaultDb.execute('DELETE FROM security_questions');
+    await vaultDb.execute('DELETE FROM virtual_cards');
     await vaultDb.execute('DELETE FROM api_keys');
     console.log('  ✓ Vault tables cleared.');
 
@@ -24,6 +27,8 @@ async function clearDb() {
       await railDb.execute('DROP TABLE IF EXISTS funding_sources');
       await railDb.execute('DROP TABLE IF EXISTS accounts');
       await railDb.execute('DROP TABLE IF EXISTS synced_api_keys');
+      await railDb.execute('DROP TABLE IF EXISTS notifications');
+      await railDb.execute('DROP TABLE IF EXISTS partner_services');
       const tenantsRes = await railDb.execute('SELECT id FROM tenants');
       for (const row of tenantsRes.rows) {
         console.log(`  Deleting tenant: ${row.id}`);
@@ -38,7 +43,9 @@ async function clearDb() {
       await railDb.execute('DELETE FROM payment_intents');
       await railDb.execute('DELETE FROM funding_sources');
       await railDb.execute('DELETE FROM accounts');
-      await railDb.execute('DELETE FROM tenants');
+      await railDb.execute('DELETE FROM notifications');
+      await railDb.execute('DELETE FROM partner_services');
+      await railDb.execute("DELETE FROM tenants WHERE routing_code != 'PAYRAIL_SYSTEM_BIC'");
       await railDb.execute('DELETE FROM synced_api_keys');
     }
     console.log('  ✓ Core Rail tables cleared.');

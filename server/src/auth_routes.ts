@@ -1,9 +1,10 @@
 import { Router, Request, Response } from 'express';
 import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
-import { vaultDb, railDb, hashPassword } from './db';
+import { vaultDb, railDb, hashPassword, verifyPassword } from './db';
 import { createAccount } from './ledger';
 import { encryptCredentials } from './crypto';
+import { generateApiKey } from './auth';
 
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'payrail-jwt-super-secret-key-12345';
@@ -106,33 +107,50 @@ router.post('/register', async (req: Request, res: Response) => {
   }
 
   try {
-    // 1. Check if user already exists in Vault
-    const checkUser = await vaultDb.execute({
-      sql: 'SELECT id FROM users WHERE username = ?',
+    // 1. Check if user or BIC already exists
+    const existingUserRes = await vaultDb.execute({
+      sql: 'SELECT id, tenant_id FROM users WHERE username = ?',
       args: [username]
     });
-    if (checkUser.rows.length > 0) {
-      res.status(409).json({ error: `Username ${username} is already registered.` });
+    const existingTenantRes = await railDb.execute({
+      sql: 'SELECT id FROM tenants WHERE routing_code = ?',
+      args: [routing_code]
+    });
+
+    // If user already exists AND tenant already exists (or it's a different user), return 409
+    if (existingUserRes.rows.length > 0 && existingTenantRes.rows.length > 0) {
+      res.status(409).json({ error: `Username ${username} or BIC ${routing_code} is already registered.` });
       return;
     }
 
     // 2. Generate Secp256k1 ECDSA Keypair for the tenant
     const { publicKeyPem, privateKeyPem } = generateSecp256k1KeyPair();
-    const tenantId = uuidv4();
+    const tenantId = existingTenantRes.rows.length > 0
+      ? (existingTenantRes.rows[0] as any).id
+      : (existingUserRes.rows.length > 0 && (existingUserRes.rows[0] as any).tenant_id)
+        ? (existingUserRes.rows[0] as any).tenant_id
+        : uuidv4();
     const createdAt = new Date().toISOString();
 
-    // 3. Create Tenant in Core Database
-    if (railDb.isPostgres) {
-      await railDb.execute({
-        sql: `INSERT INTO tenants (id, name, legal_name, routing_code, api_status, public_key_pem, created_at)
-              VALUES (?, ?, ?, ?, 'active', ?, ?)`,
-        args: [tenantId, legal_name, legal_name, routing_code, publicKeyPem, createdAt]
-      });
+    // 3. Create Tenant in Core Database if not already created by a partial retry
+    if (existingTenantRes.rows.length === 0) {
+      if (railDb.isPostgres) {
+        await railDb.execute({
+          sql: `INSERT INTO tenants (id, name, legal_name, routing_code, api_status, public_key_pem, created_at)
+                VALUES (?, ?, ?, ?, 'active', ?, ?)`,
+          args: [tenantId, legal_name, legal_name, routing_code, publicKeyPem, createdAt]
+        });
+      } else {
+        await railDb.execute({
+          sql: `INSERT OR IGNORE INTO tenants (id, legal_name, routing_code, api_status, public_key_pem, created_at)
+                VALUES (?, ?, ?, 'active', ?, ?)`,
+          args: [tenantId, legal_name, routing_code, publicKeyPem, createdAt]
+        });
+      }
     } else {
       await railDb.execute({
-        sql: `INSERT INTO tenants (id, legal_name, routing_code, api_status, public_key_pem, created_at)
-              VALUES (?, ?, ?, 'active', ?, ?)`,
-        args: [tenantId, legal_name, routing_code, publicKeyPem, createdAt]
+        sql: 'UPDATE tenants SET public_key_pem = ? WHERE id = ?',
+        args: [publicKeyPem, tenantId]
       });
     }
 
@@ -149,14 +167,21 @@ router.post('/register', async (req: Request, res: Response) => {
       tenantId
     );
 
-    // 5. Create Member Administrator User in Vault Database
+    // 5. Create or Update Member Administrator User in Vault Database
     const passwordHash = hashPassword(password);
-    const userId = `user_${uuidv4().replace(/-/g, '').slice(0, 12)}`;
-    await vaultDb.execute({
-      sql: `INSERT INTO users (id, tenant_id, username, password_hash, role, created_at)
-            VALUES (?, ?, ?, ?, 'member', ?)`,
-      args: [userId, tenantId, username, passwordHash, createdAt]
-    });
+    if (existingUserRes.rows.length === 0) {
+      const userId = `user_${uuidv4().replace(/-/g, '').slice(0, 12)}`;
+      await vaultDb.execute({
+        sql: `INSERT INTO users (id, tenant_id, username, password_hash, role, created_at)
+              VALUES (?, ?, ?, ?, 'member', ?)`,
+        args: [userId, tenantId, username, passwordHash, createdAt]
+      });
+    } else {
+      await vaultDb.execute({
+        sql: 'UPDATE users SET tenant_id = ?, password_hash = ? WHERE username = ?',
+        args: [tenantId, passwordHash, username]
+      });
+    }
 
     // 6. Auto-create linked funding source if connector config provided
     let fundingSourceId: string | null = null;
@@ -181,7 +206,21 @@ router.post('/register', async (req: Request, res: Response) => {
       }
     }
 
-    // 7. Return response with Private Key PEM (Client needs to save this for signing requests!)
+    // 7. Activate default BaaS services for this tenant and generate initial Gateway API Key
+    const allServices = [
+      'fx_conversion', 'aml_screening', 'otp_verification', 'card_issuance',
+      'ach_wire', 'crypto_wallets', 'credit_bureau', 'settlement_clearing', 'payment_intents'
+    ];
+    for (const svcId of allServices) {
+      await railDb.execute({
+        sql: `INSERT OR IGNORE INTO partner_services (tenant_id, service_id, status, activated_at)
+              VALUES (?, ?, 'active', ?)`,
+        args: [tenantId, svcId, createdAt]
+      });
+    }
+    const apiKeyResult = await generateApiKey(`${legal_name} Gateway Key`, tenantId);
+
+    // 8. Return response with Private Key PEM and Gateway API Key
     res.status(201).json({
       success: true,
       tenant: {
@@ -191,7 +230,9 @@ router.post('/register', async (req: Request, res: Response) => {
         clearing_account: clearingAccountId,
         funding_source_id: fundingSourceId,
         connector_type: connector_type || 'none',
+        gateway_key: apiKeyResult.rawKey,
       },
+      gateway_key: apiKeyResult.rawKey,
       private_key_pem: privateKeyPem,
       public_key_pem: publicKeyPem
     });
@@ -214,10 +255,9 @@ router.post('/login', async (req: Request, res: Response) => {
   }
 
   try {
-    const passwordHash = hashPassword(password);
     const userResult = await vaultDb.execute({
-      sql: 'SELECT * FROM users WHERE username = ? AND password_hash = ?',
-      args: [username, passwordHash]
+      sql: 'SELECT * FROM users WHERE username = ?',
+      args: [username]
     });
 
     if (userResult.rows.length === 0) {
@@ -226,6 +266,10 @@ router.post('/login', async (req: Request, res: Response) => {
     }
 
     const user = userResult.rows[0] as any;
+    if (!verifyPassword(password, user.password_hash)) {
+      res.status(401).json({ error: 'Invalid username or password.' });
+      return;
+    }
     let legalName = 'Clearinghouse Administrator';
     let routingCode = 'PAYRAIL_SYSTEM_BIC';
 
@@ -242,24 +286,42 @@ router.post('/login', async (req: Request, res: Response) => {
       }
     }
 
-    // Sign scoped JWT
+    // Provision a session Gateway API Key so the UI console and API playground can make live calls without hardcoded keys
+    const keyScopeTenant = user.role === 'member' ? user.tenant_id : null;
+    let sessionGatewayKey = '';
+    try {
+      const keyRes = await generateApiKey(`${legalName} Console Session Key`, keyScopeTenant);
+      sessionGatewayKey = keyRes.rawKey;
+    } catch (keyErr: any) {
+      console.warn('⚠️ Failed to provision session gateway key on login:', keyErr.message);
+    }
+
+    // Sign scoped JWT (include both camelCase and snake_case for frontend compatibility)
     const token = signJwt({
       userId: user.id,
       username: user.username,
       tenantId: user.tenant_id,
+      tenant_id: user.tenant_id,
       role: user.role,
       legalName,
-      routingCode
+      legal_name: legalName,
+      routingCode,
+      routing_code: routingCode
     });
 
     res.status(200).json({
       token,
+      gateway_key: sessionGatewayKey || undefined,
       user: {
         id: user.id,
+        userId: user.id,
         username: user.username,
+        tenantId: user.tenant_id,
         tenant_id: user.tenant_id,
         role: user.role,
+        legalName,
         legal_name: legalName,
+        routingCode,
         routing_code: routingCode
       }
     });

@@ -1,5 +1,18 @@
 import { useState } from 'react';
 import { API_BASE_URL } from '../App';
+import Box from '@mui/material/Box';
+import Button from '@mui/material/Button';
+import TextField from '@mui/material/TextField';
+import InputAdornment from '@mui/material/InputAdornment';
+import IconButton from '@mui/material/IconButton';
+import Select from '@mui/material/Select';
+import MenuItem from '@mui/material/MenuItem';
+import CircularProgress from '@mui/material/CircularProgress';
+import Alert from '@mui/material/Alert';
+import Grid from '@mui/material/Grid';
+import Paper from '@mui/material/Paper';
+import Visibility from '@mui/icons-material/Visibility';
+import VisibilityOff from '@mui/icons-material/VisibilityOff';
 
 type AuthPortalProps = {
   initialView: 'login' | 'register';
@@ -9,72 +22,91 @@ type AuthPortalProps = {
 
 type ConnectorType = 'http_callback' | 'web3_rpc';
 
-const CONNECTOR_OPTIONS: { type: ConnectorType; icon: string; label: string; desc: string }[] = [
-  {
-    type: 'http_callback',
-    icon: '🌐',
-    label: 'REST API Webhook',
-    desc: 'Connect to your core banking system via HTTP callback. Direct automated settlement.'
-  },
-  {
-    type: 'web3_rpc',
-    icon: '⚡',
-    label: 'Web3 / Blockchain',
-    desc: 'Settle via an EVM-compatible blockchain node (Ethereum, Polygon, Arbitrum, etc.).'
-  }
+const CURRENCIES = ['USD', 'EUR', 'GBP', 'NGN', 'ZAR', 'KES', 'GHS'];
+
+const STEPS = [
+  { n: 1, label: 'Institution' },
+  { n: 2, label: 'Credentials' },
+  { n: 3, label: 'Connector' },
+  { n: 4, label: 'Verify' },
 ];
 
 export default function AuthPortal({ initialView, onAuthSuccess, onNavigateHome }: AuthPortalProps) {
-  const [view, setView] = useState<'login' | 'wizard'>(initialView === 'register' ? 'wizard' : 'login');
-  const [loginUsername, setLoginUsername] = useState('');
-  const [loginPassword, setLoginPassword] = useState('');
+  const [view, setView] = useState<'login' | 'wizard' | 'forgot'>(initialView === 'register' ? 'wizard' : 'login');
+
+  // ── Login state ──
+  const [loginUser, setLoginUser] = useState('');
+  const [loginPass, setLoginPass] = useState('');
   const [loginError, setLoginError] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
+  const [showPass, setShowPass] = useState(false);
 
-  // Wizard state
+  // ── Forgot Password state ──
+  const [resetMode, setResetMode] = useState<'token' | 'security_question'>('token');
+  const [fpUser, setFpUser] = useState('');
+  const [fpAnswer, setFpAnswer] = useState('');
+  const [fpToken, setFpToken] = useState('');
+  const [fpNewPass, setFpNewPass] = useState('');
+  const [fpLoading, setFpLoading] = useState(false);
+  const [fpMsg, setFpMsg] = useState('');
+  const [fpError, setFpError] = useState('');
+
+  // ── Wizard state ──
   const [step, setStep] = useState(1);
-
-
   // Step 1
   const [legalName, setLegalName] = useState('');
   const [routingCode, setRoutingCode] = useState('');
   const [currency, setCurrency] = useState('USD');
   const [bicError, setBicError] = useState('');
-
   // Step 2
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-
+  const [showWizPass, setShowWizPass] = useState(false);
   // Step 3
   const [connectorType, setConnectorType] = useState<ConnectorType>('http_callback');
   const [httpUrl, setHttpUrl] = useState('');
   const [httpMethod, setHttpMethod] = useState('POST');
   const [httpAuthHeader, setHttpAuthHeader] = useState('');
-  const [rpcUrl, setRpcUrl] = useState('');
-
-  // Step 4 — live test
+  const [rpcUrl, setRpcUrl] = useState('https://ethereum-rpc.publicnode.com');
+  // Step 4
   const [testLoading, setTestLoading] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string; latency_ms?: number } | null>(null);
-
-  // Step 5 — result
-  const [registered, setRegistered] = useState<any>(null);
-  const [privateKey, setPrivateKey] = useState('');
   const [regLoading, setRegLoading] = useState(false);
   const [regError, setRegError] = useState('');
+  // Step 5
+  const [registered, setRegistered] = useState<any>(null);
+  const [privateKey, setPrivateKey] = useState('');
+  const [gatewayKey, setGatewayKey] = useState('');
 
+  // ── Validation ──
+  const validateBic = (v: string) => /^[A-Z0-9_]{4,20}$/.test(v.trim().toUpperCase());
+  const handleBicChange = (v: string) => {
+    const clean = v.toUpperCase().replace(/[^A-Z0-9_]/g, '');
+    setRoutingCode(clean);
+    setBicError(clean.length > 0 && !validateBic(clean) ? 'BIC must be 4–20 uppercase letters, digits, or underscores.' : '');
+  };
+
+  const step1Valid = legalName.trim().length >= 3 && validateBic(routingCode) && !bicError;
+  const step2Valid = username.trim().length >= 3 && password.length >= 6 && password === confirmPassword;
+  const step3Valid = (connectorType === 'http_callback' && httpUrl.startsWith('http')) ||
+    (connectorType === 'web3_rpc' && rpcUrl.startsWith('http'));
+
+  // ── Handlers ──
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoginError('');
-    setLoginLoading(true);
+    setLoginError(''); setLoginLoading(true);
     try {
       const res = await fetch(`${API_BASE_URL}/v1/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: loginUsername, password: loginPassword })
+        body: JSON.stringify({ username: loginUser, password: loginPass }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Login failed.');
+      if (data.gateway_key) {
+        localStorage.setItem('payrail_gateway_key', data.gateway_key);
+      }
       onAuthSuccess(data.token, data.user);
     } catch (err: any) {
       setLoginError(err.message);
@@ -83,47 +115,92 @@ export default function AuthPortal({ initialView, onAuthSuccess, onNavigateHome 
     }
   };
 
-  const validateBic = (v: string) => /^[A-Z0-9_]{4,20}$/.test(v.trim().toUpperCase());
-
-  const handleBicChange = (v: string) => {
-    const clean = v.toUpperCase().replace(/[^A-Z0-9_]/g, '');
-    setRoutingCode(clean);
-    if (clean.length > 0 && !validateBic(clean)) {
-      setBicError('BIC must be 4-20 uppercase letters, digits, or underscores.');
-    } else {
-      setBicError('');
+  const handleRequestResetToken = async () => {
+    if (!fpUser.trim()) { setFpError('Please enter your username.'); return; }
+    setFpLoading(true); setFpError(''); setFpMsg('');
+    try {
+      if (resetMode === 'token') {
+        const res = await fetch(`${API_BASE_URL}/v1/auth/forgot_password`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: fpUser.trim() }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to request reset.');
+        if (data.reset_token_dev) {
+          setFpToken(data.reset_token_dev);
+          setFpMsg('Reset token generated and auto-filled below (in-network mode). Enter your new password to complete reset.');
+        } else {
+          setFpMsg(data.message || 'Reset link sent.');
+        }
+      } else {
+        if (!fpAnswer.trim()) { setFpError('Please enter your security question answer.'); setFpLoading(false); return; }
+        const res = await fetch(`${API_BASE_URL}/v1/auth/verify_security_question`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: fpUser.trim(), answer: fpAnswer.trim() }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Security question verification failed.');
+        setFpToken(data.reset_token);
+        setFpMsg('Security answer verified! Enter your new password below.');
+      }
+    } catch (err: any) {
+      setFpError(err.message);
+    } finally {
+      setFpLoading(false);
     }
   };
 
-  const step1Valid = legalName.trim().length >= 3 && validateBic(routingCode) && !bicError;
-  const step2Valid = username.trim().length >= 3 && password.length >= 6 && password === confirmPassword;
-  const step3Valid = (connectorType === 'http_callback' && httpUrl.startsWith('http'))
-    || (connectorType === 'web3_rpc' && rpcUrl.startsWith('http'));
+  const handleCompleteReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!fpToken.trim() || fpNewPass.length < 8) {
+      setFpError('Valid reset token and a new password (min 8 chars) are required.');
+      return;
+    }
+    setFpLoading(true); setFpError('');
+    try {
+      const res = await fetch(`${API_BASE_URL}/v1/auth/reset_password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: fpToken.trim(), new_password: fpNewPass }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Password reset failed.');
+      setFpMsg('✅ Password updated! Redirecting to login…');
+      setTimeout(() => {
+        setLoginUser(fpUser);
+        setView('login');
+        setFpMsg('');
+        setFpToken('');
+        setFpNewPass('');
+      }, 1500);
+    } catch (err: any) {
+      setFpError(err.message);
+    } finally {
+      setFpLoading(false);
+    }
+  };
 
   const buildConnectorConfig = () => {
     if (connectorType === 'http_callback') {
       const headers: Record<string, string> = {};
       if (httpAuthHeader) headers['Authorization'] = httpAuthHeader;
-      return { url: httpUrl, method: httpMethod, headers, body_template: { amount: '{{amount_dollars}}', currency: '{{currency}}', receiver: '{{destination}}' } };
+      return { url: httpUrl, method: httpMethod, headers };
     }
-    if (connectorType === 'web3_rpc') {
-      return { url: rpcUrl };
-    }
+    if (connectorType === 'web3_rpc') return { url: rpcUrl };
     return null;
   };
 
   const handleTestConnection = async () => {
-    setTestLoading(true);
-    setTestResult(null);
+    setTestLoading(true); setTestResult(null);
     try {
-      const config = buildConnectorConfig();
       const res = await fetch(`${API_BASE_URL}/v1/banks/test_connection`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer sk_live_dev_key_12345' },
-        body: JSON.stringify({ connector_type: connectorType, ...(config || {}) })
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connector_type: connectorType, ...buildConnectorConfig() }),
       });
-      const data = await res.json();
-      setTestResult(data);
+      setTestResult(await res.json());
     } catch (err: any) {
       setTestResult({ ok: false, message: `Request error: ${err.message}` });
     } finally {
@@ -132,10 +209,8 @@ export default function AuthPortal({ initialView, onAuthSuccess, onNavigateHome 
   };
 
   const handleRegister = async () => {
-    setRegLoading(true);
-    setRegError('');
+    setRegLoading(true); setRegError('');
     try {
-      const config = buildConnectorConfig();
       const res = await fetch(`${API_BASE_URL}/v1/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -145,13 +220,17 @@ export default function AuthPortal({ initialView, onAuthSuccess, onNavigateHome 
           username: username.trim(),
           password,
           connector_type: connectorType,
-          connector_config: config
-        })
+          connector_config: buildConnectorConfig(),
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Registration failed.');
       setRegistered(data.tenant);
       setPrivateKey(data.private_key_pem);
+      if (data.gateway_key) {
+        setGatewayKey(data.gateway_key);
+        localStorage.setItem('payrail_gateway_key', data.gateway_key);
+      }
       setStep(5);
     } catch (err: any) {
       setRegError(err.message);
@@ -164,254 +243,394 @@ export default function AuthPortal({ initialView, onAuthSuccess, onNavigateHome 
     const blob = new Blob([privateKey], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
-    a.download = `${routingCode.toLowerCase()}_private_key.pem`;
-    a.click();
+    a.href = url; a.download = `${routingCode.toLowerCase()}_private_key.pem`; a.click();
     URL.revokeObjectURL(url);
   };
 
-  const goToLogin = () => {
-    setView('login');
-    setStep(1);
-  };
+  const cardSx = { p: 3, borderRadius: 2, bgcolor: 'background.paper', position: 'relative' } as const;
 
-  if (view === 'login') {
+  // ────────────────────────────────────────────── FORGOT PASSWORD VIEW ──
+  if (view === 'forgot') {
     return (
-      <div className="auth-portal-bg">
-        <div className="auth-card glass-card">
-          <button className="auth-back-btn" onClick={onNavigateHome}>Back</button>
-          <div className="auth-logo-row">
-            <span style={{ fontSize: '2rem' }}>💳</span>
-            <span className="auth-logo-text">Payrail</span>
-          </div>
-          <h2 className="auth-title">Clearinghouse Login</h2>
-          <p className="auth-subtitle">Access your bank console</p>
-          <form onSubmit={handleLogin} className="auth-form">
-            <div className="auth-field">
-              <label>Username</label>
-              <input type="text" value={loginUsername} onChange={e => setLoginUsername(e.target.value)} placeholder="e.g. admin" required />
-            </div>
-            <div className="auth-field">
-              <label>Password</label>
-              <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="••••••••" required />
-            </div>
-            {loginError && <div className="auth-error">{loginError}</div>}
-            <button type="submit" className="auth-btn-primary" disabled={loginLoading}>
-              {loginLoading ? 'Signing In...' : 'Sign In'}
-            </button>
-          </form>
-          <div className="auth-divider"><span>New to the network?</span></div>
-          <button className="auth-btn-ghost" onClick={() => setView('wizard')}>Connect Your Bank</button>
-        </div>
-      </div>
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '85vh', p: 2 }}>
+        <Paper sx={{ ...cardSx, width: 460 }} elevation={6} className="animate-fade-in">
+          <Button onClick={() => setView('login')} variant="text" sx={{ mb: 1 }}>← Back to Sign In</Button>
+          <Box component="h2" sx={{ m: 0, mb: 0.5 }}>Account Recovery</Box>
+          <Box sx={{ color: 'text.secondary', fontSize: 13, mb: 2.5 }}>
+            Reset your portal password via reset token or security question verification.
+          </Box>
+
+          <Box sx={{ display: 'flex', gap: 1, mb: 2.5 }}>
+            <Button
+              variant={resetMode === 'token' ? 'contained' : 'outlined'}
+              size="small"
+              onClick={() => { setResetMode('token'); setFpError(''); setFpMsg(''); }}
+              sx={{ flex: 1 }}
+            >
+              🔑 Reset Token
+            </Button>
+            <Button
+              variant={resetMode === 'security_question' ? 'contained' : 'outlined'}
+              size="small"
+              onClick={() => { setResetMode('security_question'); setFpError(''); setFpMsg(''); }}
+              sx={{ flex: 1 }}
+            >
+              🛡️ Security Question
+            </Button>
+          </Box>
+
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <TextField
+              label="Username"
+              value={fpUser}
+              onChange={e => setFpUser(e.target.value)}
+              fullWidth
+              size="small"
+            />
+
+            {resetMode === 'security_question' && (
+              <TextField
+                label="Security Question Answer"
+                value={fpAnswer}
+                onChange={e => setFpAnswer(e.target.value)}
+                fullWidth
+                size="small"
+              />
+            )}
+
+            <Button variant="outlined" onClick={handleRequestResetToken} disabled={fpLoading}>
+              {fpLoading ? 'Verifying…' : resetMode === 'token' ? 'Generate / Send Reset Token' : 'Verify Security Answer'}
+            </Button>
+
+            {fpMsg && <Alert severity="success">{fpMsg}</Alert>}
+            {fpError && <Alert severity="error">{fpError}</Alert>}
+
+            <Box component="form" onSubmit={handleCompleteReset} sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1, pt: 2, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+              <TextField
+                label="Reset Token"
+                value={fpToken}
+                onChange={e => setFpToken(e.target.value)}
+                placeholder="Paste reset token here"
+                fullWidth
+                size="small"
+              />
+              <TextField
+                label="New Password (min 8 chars)"
+                type="password"
+                value={fpNewPass}
+                onChange={e => setFpNewPass(e.target.value)}
+                fullWidth
+                size="small"
+              />
+              <Button type="submit" variant="contained" disabled={fpLoading || !fpToken}>
+                Update Password →
+              </Button>
+            </Box>
+          </Box>
+        </Paper>
+      </Box>
     );
   }
 
-  return (
-    <div className="auth-portal-bg">
-      <div className="auth-card glass-card wizard-card">
-        <button className="auth-back-btn" onClick={step > 1 && step < 5 ? () => setStep(s => s - 1) : onNavigateHome}>
-          {step > 1 && step < 5 ? 'Back' : 'Home'}
-        </button>
+  // ────────────────────────────────────────────── LOGIN VIEW ──
+  if (view === 'login') {
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '85vh', p: 2 }}>
+        <Paper sx={cardSx} elevation={6} className="animate-fade-in">
+          <Button onClick={onNavigateHome} variant="text" sx={{ mb: 1 }}>← Home</Button>
 
+          <Box sx={{ textAlign: 'center', mb: 3 }}>
+            <Box sx={{ width: 52, height: 52, borderRadius: 2, bgcolor: 'primary.main', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, mb: 1 }}>⚡</Box>
+            <Box component="h2" sx={{ m: 0, mb: 0.5 }}>Welcome back</Box>
+            <Box sx={{ color: 'text.secondary', fontSize: 13 }}>Sign in to your Payrail Clearinghouse or Member Bank portal</Box>
+          </Box>
+
+          <Box component="form" onSubmit={handleLogin} sx={{ display: 'flex', flexDirection: 'column', gap: 2, width: { xs: '100%', sm: 400 } }}>
+            <TextField label="Username" value={loginUser} onChange={e => setLoginUser(e.target.value)} required autoFocus autoComplete="username" />
+
+            <TextField
+              label="Password"
+              type={showPass ? 'text' : 'password'}
+              value={loginPass}
+              onChange={e => setLoginPass(e.target.value)}
+              required
+              autoComplete="current-password"
+              InputProps={{
+                endAdornment: (
+                  <InputAdornment position="end">
+                    <IconButton onClick={() => setShowPass(s => !s)} edge="end">
+                      {showPass ? <VisibilityOff /> : <Visibility />}
+                    </IconButton>
+                  </InputAdornment>
+                )
+              }}
+            />
+
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
+              <Button variant="text" size="small" onClick={() => setView('forgot')} sx={{ fontSize: 12 }}>
+                Forgot password?
+              </Button>
+            </Box>
+
+            {loginError && <Alert severity="error">{loginError}</Alert>}
+
+            <Button type="submit" variant="contained" disabled={loginLoading} sx={{ py: 1.5 }}>
+              {loginLoading ? <><CircularProgress size={18} sx={{ mr: 1 }} /> Signing in…</> : 'Sign In →'}
+            </Button>
+          </Box>
+
+          <Box sx={{ textAlign: 'center', mt: 3, borderTop: 1, borderColor: 'divider', pt: 2 }}>
+            <Box sx={{ color: 'text.secondary', fontSize: 13 }}>New institution?{' '}
+              <Button variant="text" onClick={() => { setView('wizard'); setStep(1); }} sx={{ fontWeight: 700 }}>Join the network</Button>
+            </Box>
+          </Box>
+        </Paper>
+      </Box>
+    );
+  }
+
+  // ────────────────────────────────────────────── WIZARD VIEW ──
+  return (
+    <div className="auth-root" style={{ alignItems: 'flex-start', paddingTop: 40 }}>
+      <div className="auth-card auth-card-wide animate-fade-in">
+        {/* Back */}
+        <Button
+          onClick={step > 1 && step < 5 ? () => setStep(s => s - 1) : onNavigateHome}
+          variant="text"
+          sx={{ position: 'absolute', top: 20, left: 20 }}
+        >
+          ← {step > 1 && step < 5 ? 'Back' : 'Home'}
+        </Button>
+
+        {/* Header */}
         {step < 5 && (
-          <div className="wizard-progress">
-            {[1,2,3,4].map(n => (
-              <div key={n} className={`wizard-step-dot ${step >= n ? 'active' : ''} ${step > n ? 'done' : ''}`}>
-                {step > n ? '✓' : n}
+          <div style={{ textAlign: 'center', marginBottom: 36, paddingTop: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
+              Partner Onboarding
+            </div>
+            <h2 style={{ marginBottom: 0 }}>Connect Your Institution</h2>
+          </div>
+        )}
+
+        {/* Progress track */}
+        {step < 5 && (
+          <div className="wizard-track" style={{ marginBottom: 36 }}>
+            {STEPS.map((s, i) => (
+              <div key={s.n} style={{ display: 'flex', alignItems: 'center', flex: i < STEPS.length - 1 ? 1 : 'none' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                  <div className={`wizard-step-node ${step > s.n ? 'done' : step === s.n ? 'current' : 'pending'}`}>
+                    {step > s.n ? '✓' : s.n}
+                  </div>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: step >= s.n ? 'var(--text-1)' : 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap' }}>
+                    {s.label}
+                  </span>
+                </div>
+                {i < STEPS.length - 1 && (
+                  <div className={`wizard-connector ${step > s.n ? 'done' : ''}`} style={{ margin: '0 8px', marginBottom: 24 }} />
+                )}
               </div>
             ))}
-            <div className="wizard-progress-bar">
-              <div className="wizard-progress-fill" style={{ width: `${((step - 1) / 3) * 100}%` }} />
-            </div>
           </div>
         )}
 
+        {/* ── STEP 1: Institution Identity ── */}
         {step === 1 && (
-          <div className="wizard-step-content">
-            <div className="wizard-step-header">
-              <span className="wizard-step-icon">🏦</span>
-              <h2>Institution Identity</h2>
-              <p>Register your financial institution on the Payrail clearing network.</p>
-            </div>
-            <div className="auth-field">
-              <label>Legal Institution Name</label>
-              <input type="text" value={legalName} onChange={e => setLegalName(e.target.value)} placeholder="e.g. First National Bank of Commerce" />
-            </div>
-            <div className="auth-field">
-              <label>Routing BIC Code</label>
-              <div className="bic-input-wrap">
-                <input type="text" value={routingCode} onChange={e => handleBicChange(e.target.value)} placeholder="e.g. FNB_CORP_001" maxLength={20} style={{ letterSpacing: '0.08em', fontFamily: 'monospace' }} />
-                {routingCode.length >= 4 && !bicError && <span className="bic-valid-badge">Valid</span>}
-              </div>
-              {bicError && <span className="field-error">{bicError}</span>}
-              <span className="field-hint">4-20 uppercase letters, digits, or underscores. Your unique network identifier.</span>
-            </div>
-            <div className="auth-field">
-              <label>Base Settlement Currency</label>
-              <select value={currency} onChange={e => setCurrency(e.target.value)}>
-                <option value="USD">USD - US Dollar</option>
-                <option value="EUR">EUR - Euro</option>
-                <option value="GBP">GBP - British Pound</option>
-                <option value="NGN">NGN - Nigerian Naira</option>
-                <option value="ZAR">ZAR - South African Rand</option>
-                <option value="KES">KES - Kenyan Shilling</option>
-              </select>
-            </div>
-            <button className="auth-btn-primary" disabled={!step1Valid} onClick={() => setStep(2)}>Continue</button>
-          </div>
+          <Box sx={{ ...cardSx }} className="animate-fade-in">
+            <Box sx={{ mb: 2 }}>
+              <Box sx={{ fontSize: 28, mb: 1 }}>🏢</Box>
+              <Box component="h3" sx={{ mb: 1 }}>Institution Identity</Box>
+              <Box sx={{ color: 'text.secondary' }}>Register your financial institution on the Payrail clearing network.</Box>
+            </Box>
+
+            <TextField label="Legal Institution Name" placeholder="First National Bank of Commerce" value={legalName} onChange={e => setLegalName(e.target.value)} fullWidth sx={{ mb: 2 }} />
+
+            <Box sx={{ position: 'relative', mb: 2 }}>
+              <TextField
+                label="Routing BIC Code"
+                placeholder="FNB_CORP_001"
+                value={routingCode}
+                onChange={e => handleBicChange(e.target.value)}
+                inputProps={{ maxLength: 20, sx: { fontFamily: 'monospace', letterSpacing: '0.08em' } }}
+                fullWidth
+              />
+              {routingCode.length >= 4 && !bicError && (
+                <Box sx={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', px: 1, py: '2px', borderRadius: 2, bgcolor: 'success.light', color: 'success.main', fontSize: 11, fontWeight: 800 }}>VALID</Box>
+              )}
+              {bicError && <Box sx={{ color: 'error.main', mt: 1 }}>{bicError}</Box>}
+              <Box sx={{ color: 'text.secondary', mt: 1, fontSize: 12 }}>4–20 uppercase letters, digits, or underscores. Your unique network identifier.</Box>
+            </Box>
+
+            <Box sx={{ mb: 2 }}>
+              <Select value={currency} onChange={e => setCurrency(e.target.value)} fullWidth>
+                {CURRENCIES.map(c => <MenuItem key={c} value={c}>{c}</MenuItem>)}
+              </Select>
+            </Box>
+
+            <Button variant="contained" disabled={!step1Valid} onClick={() => setStep(2)} fullWidth>Continue →</Button>
+          </Box>
         )}
 
+        {/* ── STEP 2: Console Credentials ── */}
         {step === 2 && (
-          <div className="wizard-step-content">
-            <div className="wizard-step-header">
-              <span className="wizard-step-icon">🔐</span>
-              <h2>Console Account</h2>
-              <p>Create your institution operator login for the clearinghouse console.</p>
-            </div>
-            <div className="auth-field">
-              <label>Console Admin Username</label>
-              <input type="text" value={username} onChange={e => setUsername(e.target.value)} placeholder="e.g. fnb_admin" autoComplete="off" />
-            </div>
-            <div className="auth-field">
-              <label>Password</label>
-              <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Min. 6 characters" />
-            </div>
-            <div className="auth-field">
-              <label>Confirm Password</label>
-              <input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} placeholder="Re-enter password" />
-              {confirmPassword && password !== confirmPassword && <span className="field-error">Passwords do not match.</span>}
-            </div>
-            <div className="wizard-info-box">
-              <span>🔑</span>
-              <p>A <strong>Secp256k1 ECDSA key pair</strong> will be auto-generated for cryptographic signing. You will download the private key at the end — store it securely.</p>
-            </div>
-            <button className="auth-btn-primary" disabled={!step2Valid} onClick={() => setStep(3)}>Continue</button>
-          </div>
+          <Box sx={{ ...cardSx }} className="animate-fade-in">
+            <Box sx={{ mb: 2 }}>
+              <Box sx={{ fontSize: 28, mb: 1 }}>🔐</Box>
+              <Box component="h3" sx={{ mb: 1 }}>Portal Credentials</Box>
+              <Box sx={{ color: 'text.secondary' }}>Create your admin login for the Payrail Partner Portal.</Box>
+            </Box>
+
+            <TextField label="Admin Username" placeholder="fnb_admin" value={username} onChange={e => setUsername(e.target.value)} fullWidth sx={{ mb: 2 }} />
+
+            <TextField
+              label="Password"
+              type={showWizPass ? 'text' : 'password'}
+              placeholder="Minimum 6 characters"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              fullWidth
+              InputProps={{ endAdornment: (
+                <InputAdornment position="end">
+                  <IconButton onClick={() => setShowWizPass(s => !s)} edge="end">{showWizPass ? <VisibilityOff /> : <Visibility />}</IconButton>
+                </InputAdornment>
+              ) }}
+              sx={{ mb: 2 }}
+            />
+
+            <TextField label="Confirm Password" type="password" placeholder="Re-enter password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} fullWidth sx={{ mb: 2 }} />
+            {confirmPassword && password !== confirmPassword && <Box sx={{ color: 'error.main', mb: 2 }}>Passwords do not match.</Box>}
+
+            <Paper sx={{ p: 2, mb: 2, bgcolor: 'background.default' }}>
+              <Box sx={{ display: 'flex', gap: 2 }}>
+                <Box>🔑</Box>
+                <Box sx={{ color: 'text.secondary' }}>A <strong style={{ color: '#6b46ff' }}>Secp256k1 ECDSA key pair</strong> and <strong style={{ color: '#06b6d4' }}>Gateway API Key</strong> will be auto-generated. You'll download them at the end.</Box>
+              </Box>
+            </Paper>
+
+            <Button variant="contained" disabled={!step2Valid} onClick={() => setStep(3)} fullWidth>Continue →</Button>
+          </Box>
         )}
 
+        {/* ── STEP 3: Connector ── */}
         {step === 3 && (
-          <div className="wizard-step-content">
-            <div className="wizard-step-header">
-              <span className="wizard-step-icon">🔌</span>
-              <h2>Core Banking Connector</h2>
-              <p>How should Payrail communicate with your banking system?</p>
-            </div>
-            <div className="connector-cards">
-              {CONNECTOR_OPTIONS.map(opt => (
-                <button key={opt.type} className={`connector-card ${connectorType === opt.type ? 'selected' : ''}`} onClick={() => setConnectorType(opt.type)}>
-                  <span className="connector-icon">{opt.icon}</span>
-                  <span className="connector-label">{opt.label}</span>
-                  <span className="connector-desc">{opt.desc}</span>
-                  {connectorType === opt.type && <span className="connector-check">✓</span>}
-                </button>
+          <Box sx={{ ...cardSx }} className="animate-fade-in">
+            <Box sx={{ mb: 2 }}>
+              <Box sx={{ fontSize: 28, mb: 1 }}>🔌</Box>
+              <Box component="h3" sx={{ mb: 1 }}>Core Banking Connector</Box>
+              <Box sx={{ color: 'text.secondary' }}>How should Payrail communicate with your banking system?</Box>
+            </Box>
+
+            <Grid container spacing={2} sx={{ mb: 2 }}>
+              {[
+                { type: 'http_callback' as ConnectorType, icon: '🌐', label: 'REST Webhook', desc: 'HTTP callback to your core banking system' },
+                { type: 'web3_rpc' as ConnectorType,     icon: '⛓️', label: 'Web3 / RPC',  desc: 'EVM-compatible blockchain node (Ethereum, Polygon…)' },
+              ].map(opt => (
+                <Grid item xs={12} md={6} key={opt.type}>
+                  <Paper onClick={() => setConnectorType(opt.type)} sx={{ p: 2, cursor: 'pointer', border: connectorType === opt.type ? 2 : 1, borderColor: connectorType === opt.type ? 'primary.main' : 'divider' }}>
+                    <Box sx={{ fontSize: 20 }}>{opt.icon}</Box>
+                    <Box sx={{ fontWeight: 700 }}>{opt.label}</Box>
+                    <Box sx={{ color: 'text.secondary' }}>{opt.desc}</Box>
+                  </Paper>
+                </Grid>
               ))}
-            </div>
+            </Grid>
+
             {connectorType === 'http_callback' && (
-              <div className="connector-config-fields">
-                <div className="auth-field">
-                  <label>Webhook Endpoint URL</label>
-                  <input type="url" value={httpUrl} onChange={e => setHttpUrl(e.target.value)} placeholder="https://api.yourbank.com/v1/payouts" />
-                </div>
-                <div className="auth-field-row">
-                  <div className="auth-field" style={{ flex: '0 0 120px' }}>
-                    <label>Method</label>
-                    <select value={httpMethod} onChange={e => setHttpMethod(e.target.value)}>
-                      <option>POST</option><option>PUT</option><option>PATCH</option>
-                    </select>
-                  </div>
-                  <div className="auth-field" style={{ flex: 1 }}>
-                    <label>Authorization Header</label>
-                    <input type="text" value={httpAuthHeader} onChange={e => setHttpAuthHeader(e.target.value)} placeholder="Bearer your_api_key_here" />
-                  </div>
-                </div>
-                <div className="wizard-template-hint">
-                  <strong>Template vars:</strong>
-                  <code>{'{{amount_dollars}}'}</code>
-                  <code>{'{{currency}}'}</code>
-                  <code>{'{{destination}}'}</code>
-                </div>
-              </div>
+              <Box sx={{ p: 2, borderRadius: 1, border: 1, borderColor: 'divider', mb: 2 }}>
+                <TextField label="Webhook Endpoint URL" placeholder="https://api.yourbank.com/v1/payouts" value={httpUrl} onChange={e => setHttpUrl(e.target.value)} fullWidth sx={{ mb: 2 }} />
+                <Grid container spacing={2}>
+                  <Grid item xs={12} md={3}>
+                    <Select value={httpMethod} onChange={e => setHttpMethod(e.target.value)} fullWidth>
+                      <MenuItem value="POST">POST</MenuItem>
+                      <MenuItem value="PUT">PUT</MenuItem>
+                      <MenuItem value="PATCH">PATCH</MenuItem>
+                    </Select>
+                  </Grid>
+                  <Grid item xs={12} md={9}>
+                    <TextField label="Authorization Header" placeholder="Bearer your_api_key" value={httpAuthHeader} onChange={e => setHttpAuthHeader(e.target.value)} fullWidth />
+                  </Grid>
+                </Grid>
+              </Box>
             )}
+
             {connectorType === 'web3_rpc' && (
-              <div className="connector-config-fields">
-                <div className="auth-field">
-                  <label>RPC Node URL</label>
-                  <input type="url" value={rpcUrl} onChange={e => setRpcUrl(e.target.value)} placeholder="https://mainnet.infura.io/v3/your_project_id" />
-                </div>
-              </div>
+              <TextField label="RPC Node URL" placeholder="https://mainnet.infura.io/v3/your_project_id" value={rpcUrl} onChange={e => setRpcUrl(e.target.value)} fullWidth sx={{ mb: 2 }} />
             )}
-            <button className="auth-btn-primary" disabled={!step3Valid} onClick={() => setStep(4)}>Continue</button>
-          </div>
+
+            <Button variant="contained" disabled={!step3Valid} onClick={() => setStep(4)} fullWidth>Continue →</Button>
+          </Box>
         )}
 
+        {/* ── STEP 4: Test & Activate ── */}
         {step === 4 && (
-          <div className="wizard-step-content">
-            <div className="wizard-step-header">
-              <span className="wizard-step-icon">📡</span>
-              <h2>Connection Test</h2>
-              <p>Verify Payrail can reach your {connectorType === 'http_callback' ? 'webhook endpoint' : 'RPC node'} before going live.</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }} className="animate-fade-in">
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 28, marginBottom: 12 }}>📡</div>
+              <h3 style={{ marginBottom: 6 }}>Connection Test</h3>
+              <p style={{ fontSize: 13 }}>Verify Payrail can reach your {connectorType === 'http_callback' ? 'webhook endpoint' : 'RPC node'} before going live.</p>
             </div>
-            <div className="test-connection-panel">
-              <div className="test-target">
-                <div className="test-target-label">Target</div>
-                <div className="test-target-value">
-                  {connectorType === 'http_callback' && `🌐 ${httpUrl}`}
-                  {connectorType === 'web3_rpc' && `⚡ ${rpcUrl}`}
-                </div>
-              </div>
-              <button className="auth-btn-primary test-btn" onClick={handleTestConnection} disabled={testLoading}>
-                {testLoading ? 'Testing...' : 'Run Connection Test'}
-              </button>
-              {testResult && (
-                <div className={`test-result-card ${testResult.ok ? 'ok' : 'fail'}`}>
-                  <div className="test-result-icon">{testResult.ok ? '✅' : '❌'}</div>
-                  <div className="test-result-body">
-                    <div className="test-result-status">{testResult.ok ? 'Connection Successful' : 'Connection Failed'}</div>
-                    <div className="test-result-message">{testResult.message}</div>
-                    {testResult.latency_ms !== undefined && testResult.latency_ms > 0 && (
-                      <div className="test-result-latency">{testResult.latency_ms}ms latency</div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-            <div className="wizard-step-actions">
-              <button className="auth-btn-ghost" onClick={handleRegister} disabled={regLoading}>Skip &amp; Activate</button>
-              <button className="auth-btn-primary" onClick={handleRegister} disabled={regLoading || !testResult?.ok}>
-                {regLoading ? 'Activating...' : 'Activate Bank'}
-              </button>
-            </div>
-            {regError && <div className="auth-error">{regError}</div>}
+
+            <Paper sx={{ p: 2, mb: 2, border: 1, borderColor: 'divider' }}>
+              <Box sx={{ fontSize: 11, fontWeight: 700, color: 'text.secondary', textTransform: 'uppercase', mb: 1 }}>Target</Box>
+              <Box component="pre" sx={{ fontFamily: 'monospace', fontSize: 13, color: 'primary.main', whiteSpace: 'pre-wrap' }}>{connectorType === 'http_callback' ? httpUrl : rpcUrl}</Box>
+            </Paper>
+
+            <Button variant="outlined" onClick={handleTestConnection} disabled={testLoading} fullWidth sx={{ mb: 2 }}>{testLoading ? <CircularProgress size={18} /> : '▶ Run Connection Test'}</Button>
+
+            {testResult && (
+              <Alert severity={testResult.ok ? 'success' : 'error'} sx={{ mb: 2 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Box sx={{ fontWeight: 700 }}>{testResult.ok ? 'Connection Successful' : 'Connection Failed'}</Box>
+                  {testResult.latency_ms && <Box sx={{ ml: 'auto', fontSize: 12, color: 'text.secondary' }}>{testResult.latency_ms}ms</Box>}
+                </Box>
+                <Box>{testResult.message}</Box>
+              </Alert>
+            )}
+
+            {regError && <Alert severity="error" sx={{ mb: 2 }}>{regError}</Alert>}
+
+            <Box sx={{ display: 'flex', gap: 2 }}>
+              <Button variant="outlined" onClick={handleRegister} disabled={regLoading} sx={{ flex: 1 }}>Skip Test & Activate</Button>
+              <Button variant="contained" onClick={handleRegister} disabled={regLoading} sx={{ flex: 2 }}>{regLoading ? <CircularProgress size={18} /> : '🏢 Activate Institution →'}</Button>
+            </Box>
           </div>
         )}
 
+        {/* ── STEP 5: Success ── */}
         {step === 5 && registered && (
-          <div className="wizard-step-content">
-            <div className="wizard-success-header">
-              <div className="wizard-success-icon">🎉</div>
-              <h2>Bank Connected Successfully</h2>
-              <p><strong>{registered.legal_name}</strong> is now live on the Payrail network.</p>
-            </div>
-            <div className="wizard-summary-cards">
-              <div className="summary-card"><div className="summary-label">Tenant ID</div><code className="summary-value">{registered.id}</code></div>
-              <div className="summary-card"><div className="summary-label">Routing BIC</div><code className="summary-value">{registered.routing_code}</code></div>
-              <div className="summary-card"><div className="summary-label">Clearing Account</div><code className="summary-value">{registered.clearing_account}</code></div>
-              <div className="summary-card"><div className="summary-label">Connector</div><code className="summary-value">{registered.connector_type}</code></div>
-              {registered.funding_source_id && (
-                <div className="summary-card"><div className="summary-label">Funding Source</div><code className="summary-value">{registered.funding_source_id}</code></div>
-              )}
-            </div>
-            <div className="wizard-key-warning">
-              <div className="key-warning-icon">⚠️</div>
-              <div>
-                <strong>Download your private key — it will never be shown again.</strong>
-                <p>This Secp256k1 ECDSA key is required to sign all payment intents. Store in a secure vault. Payrail does not retain a copy.</p>
-              </div>
-            </div>
-            <button className="auth-btn-key" onClick={downloadPrivateKey}>Download Private Key PEM</button>
-            <button className="auth-btn-primary" style={{ marginTop: '12px' }} onClick={goToLogin}>Enter Console</button>
-          </div>
+          <Box sx={{ ...cardSx, textAlign: 'center' }} className="animate-fade-in">
+            <Box sx={{ fontSize: 48, mb: 1 }}>🎉</Box>
+            <Box component="h2" sx={{ mb: 1 }}>Institution Activated!</Box>
+            <Box sx={{ color: 'text.secondary', mb: 2 }}><strong>{registered.legal_name}</strong> is now live on the Payrail network with all 9 BaaS services enabled.</Box>
+
+            <Grid container spacing={2} sx={{ textAlign: 'left', mb: 2 }}>
+              {[
+                { label: 'Tenant ID',        value: registered.id },
+                { label: 'Routing BIC',      value: registered.routing_code },
+                { label: 'Clearing Account', value: registered.clearing_account },
+                { label: 'Gateway API Key',  value: gatewayKey || 'Saved to browser' },
+              ].filter(i => i.value).map(item => (
+                <Grid item xs={12} md={6} key={item.label}>
+                  <Paper sx={{ p: 2 }}>
+                    <Box sx={{ fontSize: 10, fontWeight: 700, color: 'text.secondary', textTransform: 'uppercase', mb: 1 }}>{item.label}</Box>
+                    <Box component="pre" sx={{ fontFamily: 'monospace', fontSize: 12, color: 'primary.main', whiteSpace: 'pre-wrap', wordBreak: 'break-all', m: 0 }}>{item.value}</Box>
+                  </Paper>
+                </Grid>
+              ))}
+            </Grid>
+
+            <Paper sx={{ p: 2, mb: 2, bgcolor: 'rgba(245, 158, 11, 0.12)', border: '1px solid rgba(245, 158, 11, 0.35)' }}>
+              <Box sx={{ display: 'flex', gap: 2, textAlign: 'left' }}>
+                <Box sx={{ fontSize: 20 }}>⚠️</Box>
+                <Box>
+                  <Box sx={{ fontWeight: 700, color: '#fbbf24', mb: 0.5 }}>Download your ECDSA private key now</Box>
+                  <Box sx={{ color: 'text.secondary', fontSize: 12.5 }}>This Secp256k1 ECDSA key is required to sign all interbank payment intents. Store it in a secure vault — Payrail only stores your public key.</Box>
+                </Box>
+              </Box>
+            </Paper>
+
+            <Button onClick={downloadPrivateKey} variant="outlined" fullWidth sx={{ mb: 1.5 }}>⬇️ Download Private Key (.pem)</Button>
+            <Button variant="contained" color="primary" onClick={() => { setLoginUser(username); setLoginPass(password); setView('login'); }} fullWidth>Proceed to Sign In →</Button>
+          </Box>
         )}
       </div>
     </div>

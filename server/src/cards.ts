@@ -188,16 +188,30 @@ export async function authorizeCardTransaction(
     sql: `SELECT balance FROM accounts WHERE id = ?`,
     args: [card.ledger_account_id]
   });
-  const balance = (balResult.rows[0] as any)?.balance ?? 0;
-  if (balance < amount) {
-    return { approved: false, reason: `Insufficient funds. Available: ${card.currency} ${balance.toFixed(2)}` };
+  const balanceCents = Number((balResult.rows[0] as any)?.balance ?? 0);
+  const amountCents = Math.round(amount * 100);
+  if (balanceCents < amountCents) {
+    return { approved: false, reason: `Insufficient funds. Available: ${card.currency} ${(balanceCents / 100).toFixed(2)}` };
   }
 
-  // Debit the card account
+  // Debit the card account (asset decrease -> credit card account, debit merchant settlement equity)
+  const merchantRevenueId = `acc_card_settlement_${card.currency.toLowerCase()}`;
+  await railDb.execute({
+    sql: `INSERT OR IGNORE INTO accounts (id, name, type, category, currency, balance, status, tenant_id, created_at)
+          VALUES (?, 'Card Merchant Settlement Pool', 'liability', 'escrow', ?, 0, 'active', ?, ?)`,
+    args: [merchantRevenueId, card.currency, tenantId, new Date().toISOString()]
+  });
+
   const tx = await postTransaction(
     `Card purchase – ${merchant}`,
     'api',
-    [{ accountId: card.ledger_account_id, type: 'credit', amount, currency: card.currency }]
+    [
+      { accountId: merchantRevenueId, type: 'debit', amount: Math.round(amount * 100), currency: card.currency },
+      { accountId: card.ledger_account_id, type: 'credit', amount: Math.round(amount * 100), currency: card.currency }
+    ],
+    `card_auth_${cardId}_${Date.now()}`,
+    null,
+    tenantId
   );
 
   // Update spend_used

@@ -1,5 +1,5 @@
-import { db, initDb } from '../server/src/db';
-import { getAccounts, getTransactions, getTransactionEntries } from '../server/src/ledger';
+import { vaultDb, railDb, systemTenantId, initDb } from '../server/src/db';
+import { createAccount, getAccounts, getTransactions, getTransactionEntries, postTransaction } from '../server/src/ledger';
 import * as crypto from 'crypto';
 import { seedDatabase } from '../server/src/index';
 
@@ -12,14 +12,23 @@ async function runVerification() {
     // 1. Initialize and Seed Database
     await initDb();
     await seedDatabase();
-    
-    // Seed initial mock key if missing (handled in server index, but let's check)
-    const rawDevKey = 'sk_live_dev_key_12345';
-    const hashedDevKey = crypto.createHash('sha256').update(rawDevKey).digest('hex');
-    await db.execute({
-      sql: `INSERT OR IGNORE INTO api_keys (id, key_hash, prefix, name, status, created_at)
-            VALUES ('key_default_dev', ?, 'sk_live_', 'Default Developer Key', 'active', ?)`,
-      args: [hashedDevKey, new Date().toISOString()],
+    const now = new Date().toISOString();
+
+    // Ensure test accounts exist for verification
+    await createAccount('acc_bank_chase', 'Chase Business Checking', 'asset', 'bank', 'USD', 0, systemTenantId);
+    await createAccount('acc_bank_wellsfargo', 'Wells Fargo Treasury', 'asset', 'bank', 'USD', 850000, systemTenantId);
+    await createAccount('acc_merchant_usd', 'Merchant Settlement Wallet', 'asset', 'wallet', 'USD', 0, systemTenantId);
+
+    // Ensure funding sources exist for priority failover test
+    await railDb.execute({
+      sql: `INSERT OR REPLACE INTO funding_sources (id, name, type, account_id, priority, status, connector_type, created_at)
+            VALUES ('fs_verify_chase', 'Chase Business Checking (P1)', 'bank', 'acc_bank_chase', 1, 'active', 'http_callback', ?)`,
+      args: [now],
+    });
+    await railDb.execute({
+      sql: `INSERT OR REPLACE INTO funding_sources (id, name, type, account_id, priority, status, connector_type, created_at)
+            VALUES ('fs_verify_wf', 'Wells Fargo Treasury (P2)', 'bank', 'acc_bank_wellsfargo', 2, 'active', 'http_callback', ?)`,
+      args: [now],
     });
 
     console.log('\n[1] LEDGER ACCOUNTS AUDIT BEFORE PAYMENT');
@@ -30,123 +39,79 @@ async function runVerification() {
 
     // 2. Set Chase Bank (Priority 1) balance to 0 cents to force a SWAP / Failover!
     console.log('\n[2] SIMULATING EXHAUSTED FUNDS IN CHASE BANK (PRIORITY #1)');
-    await db.execute("UPDATE accounts SET balance = 0 WHERE id = 'acc_bank_chase'");
+    await railDb.execute("UPDATE accounts SET balance = 0 WHERE id = 'acc_bank_chase'");
+    await railDb.execute("UPDATE accounts SET balance = 850000 WHERE id = 'acc_bank_wellsfargo'");
     console.log('  Chase balance set to $0.00.');
-
-    // Wells Fargo (Priority #2) has $8,500.00 seeded.
-    const wfAcc = accounts.find(a => a.id === 'acc_bank_wellsfargo')!;
-    console.log(`  Wells Fargo (Priority #2) Balance: $${(wfAcc.balance / 100).toFixed(2)} USD.`);
+    console.log('  Wells Fargo (Priority #2) Balance: $8500.00 USD.');
 
     // 3. Create a Payment Intent for $500.00 (50000 cents) destined for the Merchant Drawer
     console.log('\n[3] CREATING PAYMENT INTENT');
-    const piId = 'pi_test_verification_999';
+    const piId = `pi_verify_${Date.now()}`;
     const clientSecret = `${piId}_secret_test`;
     const destination = 'acc_merchant_usd';
     const amount = 50000; // $500.00
     
-    await db.execute({
+    await railDb.execute({
       sql: `INSERT OR REPLACE INTO payment_intents (id, amount, currency, status, funding_source_id, destination_account_id, client_secret, metadata, created_at)
             VALUES (?, ?, 'USD', 'requires_payment_method', NULL, ?, ?, '{}', ?)`,
-      args: [piId, amount, destination, clientSecret, new Date().toISOString()],
+      args: [piId, amount, destination, clientSecret, now],
     });
     console.log(`  Payment Intent created: ${piId} for $500.00`);
 
-    // 4. Trigger Confirm and Dynamic Swap logic manually to inspect routing
+    // 4. Trigger Confirm and Dynamic Swap logic to inspect routing
     console.log('\n[4] EXECUTING GATEWAY ROUTING ENGINE (SWAP SIMULATION)');
-    // Fetch active funding sources ordered by priority
-    const fsResult = await db.execute("SELECT * FROM funding_sources WHERE status = 'active' ORDER BY priority ASC");
+    const fsResult = await railDb.execute("SELECT * FROM funding_sources WHERE status = 'active' ORDER BY priority ASC");
     const fundingSources = fsResult.rows;
 
     let successfulFs: any = null;
-    let failureReason = '';
     const logs: string[] = [];
 
     for (const fs of fundingSources) {
       logs.push(`Attempting payment using funding source: ${fs.name}`);
       try {
-        const accResult = await db.execute({
+        const accResult = await railDb.execute({
           sql: 'SELECT * FROM accounts WHERE id = ?',
           args: [fs.account_id],
         });
         const sourceAcc: any = accResult.rows[0];
+        if (!sourceAcc) throw new Error(`Account ${fs.account_id} not found`);
 
-        if (sourceAcc.balance < amount) {
-          throw new Error(`Insufficient funds: ${sourceAcc.name} balance is $${(sourceAcc.balance / 100).toFixed(2)}`);
+        if (Number(sourceAcc.balance) < amount) {
+          throw new Error(`Insufficient funds: ${sourceAcc.name} balance is $${(Number(sourceAcc.balance) / 100).toFixed(2)}`);
         }
 
-        // Atomic double-entry ledger writes
-        // Debit: Merchant Destination Account (increases)
-        // Credit: Funding Source Account (decreases)
-        const timestamp = new Date().toISOString();
-        const txId = `tx_verify_${Date.now()}`;
-
-        // Create transaction block
-        const tx = await db.transaction('write');
-        try {
-          // Insert transaction header
-          await tx.execute({
-            sql: `INSERT INTO transactions (id, payment_intent_id, description, source_channel, reference_id, status, created_at)
-                  VALUES (?, ?, ?, 'api', ?, 'posted', ?)`,
-            args: [txId, piId, `Payment Intent confirm: ${piId} via ${fs.name}`, piId, timestamp],
-          });
-
-          // Debit merchant account
-          await tx.execute({
-            sql: `INSERT INTO entries (id, transaction_id, account_id, type, amount, currency, created_at)
-                  VALUES (?, ?, ?, 'debit', ?, 'USD', ?)`,
-            args: [`ent_verify_d_${Date.now()}`, txId, destination, amount, timestamp],
-          });
-          const destBalanceResult = await tx.execute({
-            sql: 'SELECT balance FROM accounts WHERE id = ?',
-            args: [destination],
-          });
-          const newDestBal = (destBalanceResult.rows[0].balance as number) + amount;
-          await tx.execute({
-            sql: 'UPDATE accounts SET balance = ? WHERE id = ?',
-            args: [newDestBal, destination],
-          });
-
-          // Credit funding source account
-          await tx.execute({
-            sql: `INSERT INTO entries (id, transaction_id, account_id, type, amount, currency, created_at)
-                  VALUES (?, ?, ?, 'credit', ?, 'USD', ?)`,
-            args: [`ent_verify_c_${Date.now()}`, txId, fs.account_id, amount, timestamp],
-          });
-          const newSourceBal = (sourceAcc.balance as number) - amount;
-          await tx.execute({
-            sql: 'UPDATE accounts SET balance = ? WHERE id = ?',
-            args: [newSourceBal, fs.account_id],
-          });
-
-          await tx.commit();
-        } catch (e) {
-          await tx.rollback();
-          throw e;
-        } finally {
-          tx.close();
-        }
+        await postTransaction(
+          `Payment Intent confirm: ${piId} via ${fs.name}`,
+          'api',
+          [
+            { accountId: destination, type: 'debit', amount, currency: 'USD' },
+            { accountId: fs.account_id, type: 'credit', amount, currency: 'USD' },
+          ],
+          piId,
+          piId,
+          systemTenantId
+        );
 
         successfulFs = fs;
         logs.push(`Payment succeeded via ${fs.name}.`);
         break;
       } catch (err: any) {
         logs.push(`Swap Triggered: ${fs.name} failed (${err.message}).`);
-        failureReason = err.message;
       }
     }
 
     if (successfulFs) {
-      await db.execute({
+      await railDb.execute({
         sql: "UPDATE payment_intents SET status = 'succeeded', funding_source_id = ? WHERE id = ?",
         args: [successfulFs.id, piId],
       });
       console.log('  Payment Intent SUCCEEDED!');
     } else {
-      await db.execute({
+      await railDb.execute({
         sql: "UPDATE payment_intents SET status = 'failed' WHERE id = ?",
         args: [piId],
       });
-      console.log('  Payment Intent FAILED!');
+      throw new Error('All funding sources failed during verification.');
     }
 
     console.log('\n[5] ROUTING ENGINE LOGS:');
@@ -163,19 +128,18 @@ async function runVerification() {
 
     // 6. Perform Balance Integrity check (Double-Entry Constraints Verification)
     console.log('\n[7] LEDGER DOUBLE-ENTRY INTEGRITY CHECK');
-    // Fetch recent transaction entries
     const txs = await getTransactions();
     const testTx = txs.find(t => t.payment_intent_id === piId)!;
     const entries = await getTransactionEntries(testTx.id);
 
-    console.log(`  Inspecting Transaction ${testTx.id}: ${testTx.description}`);
+    console.log(`  Inspecting Transaction ${testTx.id}: ${testTx.description} (Hash: ${testTx.hash.slice(0, 16)}...)`);
     let debitsSum = 0;
     let creditsSum = 0;
 
     for (const entry of entries) {
       console.log(`    Entry: Account ${entry.account_id} | Type: ${entry.type.toUpperCase()} | Amount: $${(entry.amount / 100).toFixed(2)}`);
-      if (entry.type === 'debit') debitsSum += entry.amount;
-      if (entry.type === 'credit') creditsSum += entry.amount;
+      if (entry.type === 'debit') debitsSum += Number(entry.amount);
+      if (entry.type === 'credit') creditsSum += Number(entry.amount);
     }
 
     console.log(`  Total Debits: $${(debitsSum / 100).toFixed(2)} | Total Credits: $${(creditsSum / 100).toFixed(2)}`);

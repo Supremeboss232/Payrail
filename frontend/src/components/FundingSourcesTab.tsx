@@ -8,6 +8,7 @@ interface FundingSource {
   account_id: string;
   priority: number;
   status: 'active' | 'inactive';
+  connector_type?: string;
   created_at: string;
 }
 
@@ -27,6 +28,8 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
   const [fsType, setFsType] = useState<'bank' | 'broker' | 'crypto' | 'logistics'>('bank');
   const [fsAccountId, setFsAccountId] = useState('');
   const [fsPriority, setFsPriority] = useState('1');
+  const [fsConnectorType, setFsConnectorType] = useState<'http_callback' | 'web3_rpc'>('http_callback');
+  const [fsEndpointUrl, setFsEndpointUrl] = useState('');
 
   useEffect(() => {
     const fetchData = async () => {
@@ -40,7 +43,6 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
           const fsData = await fsRes.json();
           const accsData = await accsRes.json();
           setSources(fsData);
-          // Filter to asset accounts that can be debited
           const assets = accsData.filter((a: any) => a.type === 'asset');
           setAccounts(assets);
           if (assets.length > 0) {
@@ -61,6 +63,10 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
     if (!fsName || !fsAccountId) return;
 
     try {
+      const credentials = fsEndpointUrl.trim()
+        ? (fsConnectorType === 'web3_rpc' ? { rpc_url: fsEndpointUrl.trim() } : { url: fsEndpointUrl.trim(), method: 'POST' })
+        : undefined;
+
       const res = await fetch(`${API_BASE_URL}/console/funding_sources`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -69,12 +75,15 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
           type: fsType,
           account_id: fsAccountId,
           priority: parseInt(fsPriority),
+          connector_type: fsConnectorType,
+          credentials,
         }),
       });
 
       if (res.ok) {
         setFsName('');
         setFsPriority('1');
+        setFsEndpointUrl('');
         setIsAddOpen(false);
         onUpdate();
       } else {
@@ -94,7 +103,6 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
     const targetFs = sources[targetIndex];
 
     try {
-      // Swap priorities in backend
       await Promise.all([
         fetch(`${API_BASE_URL}/console/funding_sources/${currentFs.id}/swap`, {
           method: 'PATCH',
@@ -107,8 +115,6 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
           body: JSON.stringify({ priority: currentFs.priority }),
         }),
       ]);
-
-      // Refetch
       onUpdate();
     } catch (err) {
       console.error('Failed to swap priorities:', err);
@@ -138,8 +144,6 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      
-      {/* Add Funding Source Button */}
       <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
         <button className="button" onClick={() => setIsAddOpen(true)}>
           <span>➕</span> Link Funding Source
@@ -149,7 +153,7 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
       <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
         <h3 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '4px' }}>Gateway Routing Failover Priority</h3>
         <p style={{ color: 'var(--text-secondary)', fontSize: '14px', marginBottom: '16px' }}>
-          Define the order in which the payment rail pulls funds. When a payment intent is confirmed, the rail checks the first active funding source. If it fails (e.g. due to insufficient funds), the gateway dynamically **swaps** and fails-over to the next active method in the queue.
+          Define the order in which the payment rail pulls funds. When a payment intent is confirmed, the rail checks the first active funding source. If it fails (e.g. due to insufficient funds), the gateway dynamically swaps and fails-over to the next active method in the queue.
         </p>
 
         <div className="funding-source-list">
@@ -161,7 +165,6 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
             sources.map((fs, index) => (
               <div key={fs.id} className="funding-source-item" style={{ opacity: fs.status === 'active' ? 1 : 0.5 }}>
                 <div style={{ display: 'flex', alignItems: 'center' }}>
-                  {/* Up/Down buttons */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginRight: '16px' }}>
                     <button 
                       className="button button-secondary" 
@@ -187,7 +190,7 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
                       <span className="fs-priority-badge">Priority #{fs.priority}</span>
                     </div>
                     <div className="fs-type">
-                      Channel: {fs.type} • Account: <code style={{ fontFamily: 'var(--font-mono)' }}>{fs.account_id}</code>
+                      Channel: {fs.type} • Connector: <code style={{ fontFamily: 'var(--font-mono)' }}>{fs.connector_type || 'http_callback'}</code> • Account: <code style={{ fontFamily: 'var(--font-mono)' }}>{fs.account_id}</code>
                     </div>
                   </div>
                 </div>
@@ -211,12 +214,11 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
         </div>
       </div>
 
-      {/* Link Funding Source Slide Out Drawer */}
       {isAddOpen && (
         <div className="drawer-backdrop" onClick={() => setIsAddOpen(false)}>
           <div className="drawer" onClick={(e) => e.stopPropagation()}>
             <div className="drawer-header">
-              <h3 className="drawer-title">Link Funding Source</h3>
+              <h3 className="drawer-title">Link Live Funding Source</h3>
               <button className="drawer-close" onClick={() => setIsAddOpen(false)}>×</button>
             </div>
 
@@ -226,7 +228,7 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
                 <input 
                   type="text" 
                   className="form-input" 
-                  placeholder="e.g. Chase Business Checking" 
+                  placeholder="e.g. JPMorgan Treasury Reserve" 
                   value={fsName}
                   onChange={e => setFsName(e.target.value)}
                   required
@@ -261,6 +263,31 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
               </div>
 
               <div className="form-group">
+                <label className="form-label">Outbound Connector Protocol</label>
+                <select
+                  className="form-select"
+                  value={fsConnectorType}
+                  onChange={e => setFsConnectorType(e.target.value as any)}
+                >
+                  <option value="http_callback">🌐 HTTP REST Webhook Callback</option>
+                  <option value="web3_rpc">⛓️ Web3 EVM JSON-RPC Node</option>
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">
+                  {fsConnectorType === 'web3_rpc' ? 'Web3 RPC Endpoint URL' : 'Webhook Callback URL (Optional)'}
+                </label>
+                <input
+                  type="text"
+                  className="form-input"
+                  placeholder={fsConnectorType === 'web3_rpc' ? 'https://ethereum-rpc.publicnode.com' : 'https://api.yourbank.com/v1/settlement'}
+                  value={fsEndpointUrl}
+                  onChange={e => setFsEndpointUrl(e.target.value)}
+                />
+              </div>
+
+              <div className="form-group">
                 <label className="form-label">Link to Ledger Account (Debit Source)</label>
                 {accounts.length === 0 ? (
                   <div style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
@@ -272,8 +299,8 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
                     value={fsAccountId} 
                     onChange={e => setFsAccountId(e.target.value)}
                   >
-                    {accounts.map(a => (
-                      <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>
+                    {accounts.map((a, idx) => (
+                      <option key={`${a.id}-${idx}`} value={a.id}>{a.name} ({a.currency})</option>
                     ))}
                   </select>
                 )}
@@ -286,7 +313,6 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
           </div>
         </div>
       )}
-
     </div>
   );
 }

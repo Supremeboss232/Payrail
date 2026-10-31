@@ -44,7 +44,7 @@ async function refreshSdnList(): Promise<void> {
 /**
  * Ensures the SDN list is loaded and fresh.
  */
-async function ensureSdnLoaded(): Promise<void> {
+export async function ensureSdnLoaded(): Promise<void> {
   if (sdnCache.length === 0 || Date.now() - lastSdnFetch > SDN_TTL_MS) {
     try {
       await refreshSdnList();

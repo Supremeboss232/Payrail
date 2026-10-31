@@ -30,6 +30,8 @@ export default function LedgerTab({ refreshTrigger }: LedgerTabProps) {
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
   const [accountHistory, setAccountHistory] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [camtXml, setCamtXml] = useState<string | null>(null);
+  const [camtLoading, setCamtLoading] = useState(false);
 
   // Creation form states
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -95,6 +97,7 @@ export default function LedgerTab({ refreshTrigger }: LedgerTabProps) {
 
   const handleAccountClick = async (account: Account) => {
     setSelectedAccount(account);
+    setCamtXml(null);
     try {
       const res = await fetch(`${API_BASE_URL}/console/accounts/${account.id}/history`);
       if (res.ok) {
@@ -104,6 +107,36 @@ export default function LedgerTab({ refreshTrigger }: LedgerTabProps) {
     } catch (err) {
       console.error(err);
     }
+  };
+
+  const handleExportCamt053 = async (accountId: string) => {
+    setCamtLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/v1/statements/${accountId}/camt053`, {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('payrail_gateway_key') || ''}`
+        }
+      });
+      const data = await res.json();
+      if (res.ok && data.camt_053_xml) {
+        setCamtXml(data.camt_053_xml);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setCamtLoading(false);
+    }
+  };
+
+  const downloadCamtXml = () => {
+    if (!camtXml || !selectedAccount) return;
+    const blob = new Blob([camtXml], { type: 'application/xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${selectedAccount.id}_camt053_statement.xml`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const formatCurrency = (amountCents: number, currency: string) => {
@@ -131,7 +164,7 @@ export default function LedgerTab({ refreshTrigger }: LedgerTabProps) {
       
       {/* Create Account Header Button */}
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px' }}>
-        <button className="button" onClick={() => setIsCreateOpen(true)}>
+        <button className="btn btn-primary" onClick={() => setIsCreateOpen(true)}>
           <span>➕</span> Create Ledger Account
         </button>
       </div>
@@ -158,8 +191,10 @@ export default function LedgerTab({ refreshTrigger }: LedgerTabProps) {
                         {account.type === 'asset' ? '📥' : account.type === 'liability' ? '📤' : '💼'}
                       </span>
                       <div>
-                        <div style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{account.name}</div>
-                        <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>ID: {account.id} • {account.category.toUpperCase()}</div>
+                        <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{account.name}</div>
+                        <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                          ID: {account.id} • {account.category.toUpperCase()}
+                        </div>
                       </div>
                     </div>
 
@@ -189,16 +224,35 @@ export default function LedgerTab({ refreshTrigger }: LedgerTabProps) {
             </div>
 
             <div className="drawer-content">
-              <div className="glass-panel" style={{ display: 'flex', justifyContent: 'space-between', padding: '16px' }}>
-                <span style={{ color: 'var(--text-secondary)' }}>Current Balance</span>
-                <span style={{ fontWeight: 700, fontFamily: 'var(--font-mono)' }}>
-                  {formatCurrency(selectedAccount.balance, selectedAccount.currency)}
-                </span>
+              <div className="glass-panel" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px' }}>
+                <div>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Current Cleared Balance</div>
+                  <div style={{ fontWeight: 800, fontSize: 20, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)', marginTop: 2 }}>
+                    {formatCurrency(selectedAccount.balance, selectedAccount.currency)}
+                  </div>
+                </div>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => handleExportCamt053(selectedAccount.id)}
+                  disabled={camtLoading}
+                >
+                  {camtLoading ? 'Generating…' : '📄 Export ISO 20022 camt.053'}
+                </button>
               </div>
+
+              {camtXml && (
+                <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-default)', borderRadius: 10, padding: 12 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <span className="badge badge-purple">ISO 20022 camt.053.001.02 XML Statement</span>
+                    <button className="btn btn-primary btn-sm" onClick={downloadCamtXml}>⬇️ Download XML</button>
+                  </div>
+                  <pre className="code-block" style={{ maxHeight: 200, fontSize: 11 }}>{camtXml}</pre>
+                </div>
+              )}
 
               <div>
                 <h4 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px', color: 'var(--text-secondary)' }}>
-                  Journal Posting History
+                  Journal Posting History ({accountHistory.length})
                 </h4>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   {accountHistory.length === 0 ? (
@@ -216,8 +270,8 @@ export default function LedgerTab({ refreshTrigger }: LedgerTabProps) {
                           style={{ 
                             padding: '12px', 
                             borderRadius: '8px', 
-                            background: 'rgba(255,255,255,0.015)',
-                            border: '1px solid var(--border-glass)',
+                            background: 'rgba(255,255,255,0.02)',
+                            border: '1px solid var(--border-subtle)',
                             display: 'flex',
                             justifyContent: 'space-between',
                             alignItems: 'center'
@@ -225,24 +279,20 @@ export default function LedgerTab({ refreshTrigger }: LedgerTabProps) {
                         >
                           <div>
                             <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-primary)' }}>{item.description}</div>
-                            <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                              TX ID: {item.transaction_id} • {new Date(item.created_at).toLocaleDateString()}
+                            <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                              TX: {item.transaction_id} • {new Date(item.created_at).toLocaleString()}
                             </div>
                           </div>
 
                           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
                             <span style={{ 
-                              fontWeight: 600, 
+                              fontWeight: 700, 
                               fontFamily: 'var(--font-mono)', 
-                              color: isIncrease ? 'var(--accent-green)' : 'var(--accent-red)' 
+                              color: isIncrease ? '#34d399' : '#f87171' 
                             }}>
                               {isIncrease ? '+' : '-'}{formatCurrency(item.amount, item.currency)}
                             </span>
-                            <span className="badge" style={{ 
-                              fontSize: '8px',
-                              backgroundColor: item.type === 'debit' ? 'rgba(147, 51, 234, 0.1)' : 'rgba(6, 182, 212, 0.1)',
-                              color: item.type === 'debit' ? 'var(--primary)' : 'var(--secondary)'
-                            }}>
+                            <span className={`badge ${item.type === 'debit' ? 'badge-purple' : 'badge-info'}`} style={{ fontSize: '9px' }}>
                               {item.type.toUpperCase()}
                             </span>
                           </div>
@@ -350,7 +400,7 @@ export default function LedgerTab({ refreshTrigger }: LedgerTabProps) {
                 </div>
               </div>
 
-              <button type="submit" className="button" style={{ marginTop: '16px' }}>
+              <button type="submit" className="btn btn-primary" style={{ marginTop: '16px' }}>
                 Create Account
               </button>
             </form>

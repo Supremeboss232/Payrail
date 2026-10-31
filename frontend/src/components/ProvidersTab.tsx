@@ -47,8 +47,21 @@ interface ServiceCatalog {
 interface FxRate {
   base: string;
   rates: Record<string, number>;
+  source?: string;
   timestamp: string;
 }
+
+const PROVIDER_ENV_FIELDS: { key: string; label: string; placeholder: string; group: string }[] = [
+  { key: 'FIXER_IO_API_KEY', label: 'Fixer.io API Key (Optional — Open ExchangeRate-API active by default)', placeholder: 'Enter Fixer.io API key...', group: 'FX & Treasury' },
+  { key: 'CRYPTO_RPC_URL', label: 'Web3 EVM RPC Node URL (Ethereum / Polygon / Alchemy)', placeholder: 'https://ethereum-rpc.publicnode.com', group: 'Web3 & Crypto' },
+  { key: 'CRYPTO_PRIVATE_KEY', label: 'Custodial Hot Wallet Private Key (Hex)', placeholder: '0x...', group: 'Web3 & Crypto' },
+  { key: 'SENDGRID_API_KEY', label: 'SendGrid API Key (Transactional Email & OTP)', placeholder: 'SG.xxxx...', group: 'Email & Identity' },
+  { key: 'SENDGRID_FROM_EMAIL', label: 'Verified Sender Email Address', placeholder: 'noreply@yourbank.com', group: 'Email & Identity' },
+  { key: 'COMPLY_ADVANTAGE_API_KEY', label: 'ComplyAdvantage API Key (Optional — U.S. Treasury OFAC SDN active by default)', placeholder: 'Enter ComplyAdvantage key...', group: 'Compliance & AML' },
+  { key: 'MARQETA_BASE_URL', label: 'Marqeta Base URL (Optional — Internal Luhn Card Vault active by default)', placeholder: 'https://sandbox-api.marqeta.com/v3', group: 'Card Issuing' },
+  { key: 'ACH_ROUTING_NUMBER', label: 'Sponsor Bank ABA Routing Number (FedACH)', placeholder: '021000021', group: 'ACH & Wire' },
+  { key: 'EQUIFAX_CLIENT_ID', label: 'Equifax Client ID (Optional — Ledger Credit Bureau active by default)', placeholder: 'Enter Equifax Client ID...', group: 'Credit Bureau' },
+];
 
 interface CryptoStatus {
   status: string;
@@ -126,18 +139,54 @@ export default function ProvidersTab() {
   const [fxLoading, setFxLoading] = useState(false);
   const [selectedCurrencies, setSelectedCurrencies] = useState(['EUR', 'GBP', 'NGN', 'GHS']);
   const [expandedService, setExpandedService] = useState<string | null>(null);
+  const [isConfigOpen, setIsConfigOpen] = useState(false);
+  const [envInputs, setEnvInputs] = useState<Record<string, string>>({});
+  const [envMeta, setEnvMeta] = useState<Record<string, { is_set: boolean; masked_value: string }>>({});
+  const [savingEnv, setSavingEnv] = useState(false);
+  const [saveMsg, setSaveMsg] = useState('');
 
   const fetchAll = async () => {
     setLoading(true);
     try {
-      const [statusRes, catalogRes] = await Promise.all([
+      const [statusRes, catalogRes, envRes] = await Promise.all([
         fetch(`${API_BASE_URL}/v1/providers/status`),
         fetch(`${API_BASE_URL}/v1/services/catalog`),
+        fetch(`${API_BASE_URL}/console/settings/providers`),
       ]);
       if (statusRes.ok) setStatus(await statusRes.json());
       if (catalogRes.ok) setCatalog(await catalogRes.json());
+      if (envRes.ok) {
+        const d = await envRes.json();
+        setEnvMeta(d.keys || {});
+      }
     } catch (e) { console.error(e); }
     setLoading(false);
+  };
+
+  const handleSaveProviders = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingEnv(true);
+    setSaveMsg('');
+    try {
+      const payload: Record<string, string> = {};
+      for (const [k, v] of Object.entries(envInputs)) {
+        if (v !== undefined && v.trim() !== '') payload[k] = v.trim();
+      }
+      const res = await fetch(`${API_BASE_URL}/console/settings/providers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to save provider settings');
+      setSaveMsg('✅ Live provider credentials saved and activated!');
+      setEnvInputs({});
+      await Promise.all([fetchAll(), fetchFxRates(), fetchCrypto()]);
+    } catch (err: any) {
+      setSaveMsg(`❌ ${err.message}`);
+    } finally {
+      setSavingEnv(false);
+    }
   };
 
   const fetchFxRates = async () => {
@@ -181,15 +230,75 @@ export default function ProvidersTab() {
       {/* ─── Header ─── */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <h2 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Payrail Services</h2>
+          <h2 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Payrail Live Services & Providers</h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: 14, marginTop: 4 }}>
-            Payrail acts as your financial middleware — one contract with each vendor, shared across all member banks.
+            Connected to live market FX feeds, U.S. Treasury OFAC SDN sanctions list, and Ethereum Mainnet RPC.
           </p>
         </div>
-        <button className="button button-secondary" onClick={() => { fetchAll(); fetchFxRates(); fetchCrypto(); }} style={{ fontSize: 13 }}>
-          🔄 Refresh All
-        </button>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button className="btn btn-primary btn-sm" onClick={() => { setIsConfigOpen(v => !v); setSaveMsg(''); }}>
+            🔑 {isConfigOpen ? 'Close Credentials Manager' : 'Configure Live Provider Keys'}
+          </button>
+          <button className="button button-secondary" onClick={() => { fetchAll(); fetchFxRates(); fetchCrypto(); }} style={{ fontSize: 13 }}>
+            🔄 Refresh All
+          </button>
+        </div>
       </div>
+
+      {/* ─── Live Provider Credentials Drawer / Panel ─── */}
+      {isConfigOpen && (
+        <div className="glass-panel" style={{ padding: 24, border: '1px solid var(--accent-primary)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+            <div>
+              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>🔑 Upstream Vendor API Keys & Endpoints</h3>
+              <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-secondary)' }}>
+                Save live vendor credentials directly to the encrypted Vault database. Changes apply immediately without restarting the server.
+              </p>
+            </div>
+          </div>
+
+          <form onSubmit={handleSaveProviders} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 14 }}>
+              {PROVIDER_ENV_FIELDS.map(field => {
+                const meta = envMeta[field.key];
+                return (
+                  <div key={field.key} style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)' }}>{field.label}</label>
+                      {meta?.is_set && (
+                        <span className="badge badge-success" style={{ fontSize: 9.5, padding: '1px 6px' }}>
+                          Set ({meta.masked_value})
+                        </span>
+                      )}
+                    </div>
+                    <input
+                      className="form-input"
+                      type={field.key.includes('KEY') || field.key.includes('SECRET') || field.key.includes('TOKEN') ? 'password' : 'text'}
+                      placeholder={meta?.is_set ? `Configured (${meta.masked_value}) — enter new value to overwrite` : field.placeholder}
+                      value={envInputs[field.key] || ''}
+                      onChange={e => setEnvInputs(prev => ({ ...prev, [field.key]: e.target.value }))}
+                      style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+
+            {saveMsg && (
+              <div className={`alert ${saveMsg.startsWith('✅') ? 'alert-success' : 'alert-error'}`} style={{ marginBottom: 0 }}>
+                {saveMsg}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 6 }}>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setIsConfigOpen(false)}>Cancel</button>
+              <button type="submit" className="btn btn-primary btn-sm" disabled={savingEnv}>
+                {savingEnv ? 'Saving & Activating…' : '💾 Save & Apply Live Credentials'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* ─── Network Summary Strip ─── */}
       <div style={{
@@ -404,7 +513,10 @@ export default function ProvidersTab() {
           {/* FX Rates Live Panel */}
           <div className="glass-panel" style={{ padding: 24 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>💱 Live FX Rates (via Fixer.io)</h3>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>💱 Live Market FX Exchange Rates</h3>
+                {fxRates?.source && <div style={{ fontSize: 11.5, color: '#10b981', marginTop: 2 }}>Feed: {fxRates.source}</div>}
+              </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 {fxRates && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>🕐 {new Date(fxRates.timestamp).toLocaleTimeString()}</span>}
                 <button className="button button-secondary" onClick={fetchFxRates} disabled={fxLoading} style={{ fontSize: 12, padding: '6px 12px' }}>

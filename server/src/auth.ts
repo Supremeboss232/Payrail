@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
-import { vaultDb, railDb } from './db';
+import { vaultDb, railDb, systemTenantId } from './db';
 
 export interface ApiKey {
   id: string;
@@ -42,7 +42,7 @@ export async function generateApiKey(name: string, tenantId: string | null = nul
   await railDb.execute({
     sql: `INSERT INTO synced_api_keys (id, tenant_id, key_hash, prefix, name, status, created_at)
           VALUES (?, ?, ?, ?, ?, 'active', ?)`,
-    args: [id, tenantId, keyHash, prefix, name, createdAt],
+    args: [id, tenantId || systemTenantId, keyHash, prefix, name, createdAt],
   });
 
   const key: ApiKey = {
@@ -105,18 +105,23 @@ export async function getApiKeys(tenantId?: string | null): Promise<Omit<ApiKey,
  */
 export async function authenticateApiKey(req: Request, res: Response, next: NextFunction): Promise<void> {
   const authHeader = req.headers.authorization;
+  const gatewayHeader = req.headers['x-gateway-api-key'] as string | undefined;
 
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  let rawKey = '';
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    rawKey = authHeader.substring(7).trim();
+  } else if (gatewayHeader) {
+    rawKey = gatewayHeader.trim();
+  } else {
     res.status(401).json({
       error: {
         code: 'unauthorized',
-        message: 'No API key provided. Include "Authorization: Bearer sk_live_..." header.',
+        message: 'No API key provided. Include "Authorization: Bearer sk_live_..." or "X-Gateway-API-Key: sk_live_..." header.',
       },
     });
     return;
   }
 
-  const rawKey = authHeader.substring(7).trim();
   if (!rawKey.startsWith('sk_live_')) {
     res.status(401).json({
       error: {

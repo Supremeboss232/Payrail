@@ -26,7 +26,7 @@ interface BanksTabProps {
 
 const CONNECTOR_ICONS: Record<string, string> = {
   http_callback: '🌐',
-  web3_rpc: '⚡',
+  web3_rpc: '⛓️',
   none: '—'
 };
 
@@ -55,13 +55,11 @@ export default function BanksTab({ refreshTrigger, onUpdate, onConnectBank }: Ba
   useEffect(() => { fetchBanks(); }, [refreshTrigger]);
 
   const handleTestConnection = async (bank: BankTenant) => {
-    if (!bank.funding_source) return;
     setTestingId(bank.id);
     try {
-      const res = await fetch(`${API_BASE_URL}/v1/banks/test_connection`, {
+      const res = await fetch(`${API_BASE_URL}/console/banks/${bank.id}/test_connection`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer sk_live_dev_key_12345' },
-        body: JSON.stringify({ connector_type: bank.funding_source.connector_type })
+        headers: { 'Content-Type': 'application/json' },
       });
       const data = await res.json();
       setTestResults(prev => ({ ...prev, [bank.id]: data }));
@@ -85,7 +83,7 @@ export default function BanksTab({ refreshTrigger, onUpdate, onConnectBank }: Ba
   };
 
   const formatBalance = (cents: number | undefined) => {
-    if (cents === undefined || cents === null) return '—';
+    if (cents === undefined || cents === null) return '$0.00';
     return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(cents / 100);
   };
 
@@ -94,103 +92,138 @@ export default function BanksTab({ refreshTrigger, onUpdate, onConnectBank }: Ba
 
   if (loading) {
     return (
-      <div className="tab-loading">
-        <div className="loading-spinner" />
-        <p>Loading connected banks...</p>
+      <div className="empty-state">
+        <span className="spinner" style={{ width: 24, height: 24, marginBottom: 12 }} />
+        <p>Loading connected member banks…</p>
       </div>
     );
   }
 
   if (error) {
-    return <div className="tab-error">⚠️ {error}</div>;
+    return <div className="alert alert-error">⚠️ {error}</div>;
   }
 
   return (
-    <div className="banks-tab">
-      <div className="banks-header">
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+      <div className="section-header">
         <div>
-          <h2 className="banks-title">Connected Banks</h2>
-          <p className="banks-subtitle">{banks.length} institution{banks.length !== 1 ? 's' : ''} on the clearing network</p>
+          <h2>Connected Member Institutions</h2>
+          <p>{banks.length} institution{banks.length !== 1 ? 's' : ''} onboarded on the Payrail clearinghouse network</p>
         </div>
-        <button className="btn-connect-bank" onClick={onConnectBank}>
-          <span>+</span> Connect New Bank
+        <button className="btn btn-primary" onClick={onConnectBank}>
+          ➕ Onboard New Bank
         </button>
       </div>
 
       {banks.length === 0 ? (
-        <div className="banks-empty-state">
-          <div className="banks-empty-icon">🏦</div>
-          <h3>No Banks Connected Yet</h3>
-          <p>Connect your first financial institution to start clearing payments on the Payrail network.</p>
-          <button className="auth-btn-primary" onClick={onConnectBank} style={{ marginTop: '20px', maxWidth: '260px' }}>
-            Connect Your First Bank
-          </button>
+        <div className="card">
+          <div className="empty-state">
+            <div className="empty-state-icon">🏦</div>
+            <h3>No Member Banks Connected Yet</h3>
+            <p>Onboard your first financial institution to provision an isolated clearing shard and ECDSA key pair.</p>
+            <button className="btn btn-primary" onClick={onConnectBank} style={{ marginTop: 18 }}>
+              ➕ Onboard First Institution
+            </button>
+          </div>
         </div>
       ) : (
-        <div className="banks-grid">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 18 }}>
           {banks.map(bank => {
             const result = testResults[bank.id];
             const isTesting = testingId === bank.id;
-            const connectorType = bank.funding_source?.connector_type || 'none';
-            const connectorIcon = CONNECTOR_ICONS[connectorType] || '—';
+            const connectorType = bank.funding_source?.connector_type || 'http_callback';
+            const connectorIcon = CONNECTOR_ICONS[connectorType] || '🌐';
 
             return (
-              <div key={bank.id} className={`bank-card ${bank.api_status === 'inactive' ? 'inactive' : ''}`}>
-                <div className="bank-card-header">
-                  <div className="bank-card-identity">
-                    <div className="bank-card-name">{bank.legal_name || bank.name}</div>
-                    <div className="bank-card-bic">{bank.routing_code}</div>
+              <div
+                key={bank.id}
+                className="card"
+                style={{
+                  opacity: bank.api_status === 'inactive' ? 0.65 : 1,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 16,
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)' }}>
+                      {bank.legal_name || bank.name}
+                    </div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: '#818cf8', marginTop: 3 }}>
+                      BIC: {bank.routing_code}
+                    </div>
                   </div>
-                  <div className={`bank-status-badge ${bank.api_status}`}>
-                    {bank.api_status === 'active' ? '● Active' : '○ Inactive'}
-                  </div>
+                  <span className={`badge ${bank.api_status === 'active' ? 'badge-success' : 'badge-danger'}`}>
+                    {bank.api_status === 'active' ? '● Active' : '○ Suspended'}
+                  </span>
                 </div>
 
-                <div className="bank-card-stats">
-                  <div className="bank-stat">
-                    <div className="bank-stat-label">Clearing Balance</div>
-                    <div className="bank-stat-value">{formatBalance(bank.clearing_balance)}</div>
-                  </div>
-                  <div className="bank-stat">
-                    <div className="bank-stat-label">Connector</div>
-                    <div className="bank-stat-value">{connectorIcon} {connectorType === 'none' ? 'None' : connectorType.replace('_', ' ')}</div>
-                  </div>
-                  <div className="bank-stat">
-                    <div className="bank-stat-label">Connected</div>
-                    <div className="bank-stat-value">{formatDate(bank.created_at)}</div>
-                  </div>
-                  {bank.clearing_account && (
-                    <div className="bank-stat">
-                      <div className="bank-stat-label">Clearing Account</div>
-                      <div className="bank-stat-value" style={{ fontFamily: 'monospace', fontSize: '11px' }}>{bank.clearing_account}</div>
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: 10,
+                  padding: 12,
+                  background: 'var(--bg-surface)',
+                  borderRadius: 10,
+                  border: '1px solid var(--border-subtle)',
+                }}>
+                  <div>
+                    <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>
+                      Clearing Balance
                     </div>
-                  )}
+                    <div style={{ fontSize: 15, fontWeight: 800, fontFamily: 'var(--font-mono)', color: '#34d399', marginTop: 3 }}>
+                      {formatBalance(bank.clearing_balance)}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>
+                      Core Connector
+                    </div>
+                    <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-primary)', marginTop: 3 }}>
+                      {connectorIcon} {connectorType.replace('_', ' ')}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>
+                      Clearing Account
+                    </div>
+                    <div style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', marginTop: 3 }}>
+                      {bank.clearing_account || '—'}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>
+                      Onboarded
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 3 }}>
+                      {formatDate(bank.created_at)}
+                    </div>
+                  </div>
                 </div>
 
                 {result && (
-                  <div className={`bank-test-result ${result.ok ? 'ok' : 'fail'}`}>
+                  <div className={`alert ${result.ok ? 'alert-success' : 'alert-error'}`} style={{ marginBottom: 0, padding: '8px 12px', fontSize: 12 }}>
                     {result.ok ? '✅' : '❌'} {result.message}
                     {result.latency_ms !== undefined && result.latency_ms > 0 && ` (${result.latency_ms}ms)`}
                   </div>
                 )}
 
-                <div className="bank-card-actions">
-                  {bank.funding_source && (
-                    <button
-                      className="bank-action-btn"
-                      onClick={() => handleTestConnection(bank)}
-                      disabled={isTesting}
-                      title="Test connector connectivity"
-                    >
-                      {isTesting ? '⏳' : '📡'} {isTesting ? 'Testing...' : 'Test'}
-                    </button>
-                  )}
+                <div style={{ display: 'flex', gap: 10, marginTop: 'auto' }}>
                   <button
-                    className={`bank-action-btn ${bank.api_status === 'active' ? 'danger' : 'success'}`}
-                    onClick={() => handleToggleStatus(bank)}
-                    title={bank.api_status === 'active' ? 'Disable bank' : 'Enable bank'}
+                    className="btn btn-secondary btn-sm"
+                    style={{ flex: 1 }}
+                    onClick={() => handleTestConnection(bank)}
+                    disabled={isTesting}
                   >
-                    {bank.api_status === 'active' ? '⏸ Disable' : '▶ Enable'}
+                    {isTesting ? '⏳ Testing…' : '📡 Ping Connector'}
+                  </button>
+                  <button
+                    className={`btn btn-sm ${bank.api_status === 'active' ? 'btn-danger' : 'btn-success'}`}
+                    style={{ flex: 1 }}
+                    onClick={() => handleToggleStatus(bank)}
+                  >
+                    {bank.api_status === 'active' ? '⏸ Suspend Shard' : '▶ Activate Shard'}
                   </button>
                 </div>
               </div>

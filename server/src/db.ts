@@ -5,7 +5,27 @@ import * as crypto from 'crypto';
 import * as dotenv from 'dotenv';
 
 export function hashPassword(password: string): string {
-  return crypto.createHash('sha256').update(password + 'payrail-salt-12345').digest('hex');
+  const salt = process.env.PASSWORD_SALT || 'payrail-salt-12345';
+  const key = crypto.scryptSync(password, salt, 64);
+  return `scrypt:${key.toString('hex')}`;
+}
+
+export function verifyPassword(password: string, storedHash: string): boolean {
+  if (storedHash.startsWith('scrypt:')) {
+    const expected = hashPassword(password);
+    try {
+      return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(storedHash));
+    } catch {
+      return false;
+    }
+  }
+  // Legacy SHA-256 fallback
+  const legacy = crypto.createHash('sha256').update(password + 'payrail-salt-12345').digest('hex');
+  try {
+    return crypto.timingSafeEqual(Buffer.from(legacy), Buffer.from(storedHash));
+  } catch {
+    return false;
+  }
 }
 
 // Load env configuration
@@ -61,6 +81,10 @@ function translateToPg(sql: string, args: any[] = []): { sql: string; args: any[
       pgSql += ' ON CONFLICT (tenant_id, service_id) DO NOTHING';
     } else if (pgSql.includes('virtual_cards')) {
       pgSql += ' ON CONFLICT (id, tenant_id) DO NOTHING';
+    } else if (pgSql.includes('funding_sources')) {
+      pgSql += ' ON CONFLICT (id) DO NOTHING';
+    } else if (pgSql.includes('system_settings')) {
+      pgSql += ' ON CONFLICT (key) DO NOTHING';
     }
   }
 
@@ -250,9 +274,9 @@ export async function createNotification(
       );
     } else {
       await railDb.execute({
-        sql: `INSERT OR IGNORE INTO notifications (id, title, message, type, read, created_at)
-              VALUES (?, ?, ?, ?, 0, ?)`,
-        args: [id, title, message, type, createdAt],
+        sql: `INSERT OR IGNORE INTO notifications (id, tenant_id, title, message, type, read, created_at)
+              VALUES (?, ?, ?, ?, ?, 0, ?)`,
+        args: [id, activeTenantId, title, message, type, createdAt],
       });
     }
   } catch (err: any) {
@@ -498,6 +522,11 @@ export async function initDb() {
       created_at TEXT NOT NULL
     );
   `);
+  if (!railDb.isPostgres) {
+    try {
+      await railDb.execute('ALTER TABLE funding_sources ADD COLUMN tenant_id UUID;');
+    } catch (e) {}
+  }
 
   if (railDb.isPostgres) {
     try {
@@ -564,6 +593,27 @@ export async function initDb() {
       updated_at TEXT NOT NULL
     );
   `);
+
+  // Create system_settings table (persists admin-configured provider credentials & endpoints)
+  await vaultDb.execute(`
+    CREATE TABLE IF NOT EXISTS system_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+
+  // Hydrate process.env with any persisted system_settings from vaultDb
+  try {
+    const settingsRes = await vaultDb.execute('SELECT key, value FROM system_settings');
+    for (const row of settingsRes.rows as any[]) {
+      if (row.key && row.value !== undefined && row.value !== '') {
+        process.env[row.key] = row.value;
+      }
+    }
+  } catch (e: any) {
+    console.warn('⚠️ Failed loading system_settings from vaultDb:', e.message);
+  }
 
   // Virtual card issuance — ledger-backed cards, no Marqeta required
   await railDb.execute(`

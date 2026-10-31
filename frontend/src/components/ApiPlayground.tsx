@@ -22,7 +22,7 @@ interface ApiPlaygroundProps {
 export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: ApiPlaygroundProps) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [fundingSources, setFundingSources] = useState<FundingSource[]>([]);
-  const [apiKey, setApiKey] = useState('sk_live_dev_key_12345');
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('payrail_gateway_key') || '');
 
   // B2B Asymmetric Signing Credentials
   const [authMode, setAuthMode] = useState<'bearer' | 'b2b'>('bearer');
@@ -89,21 +89,21 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
       amount: parseInt(intentAmount),
       currency: intentCurrency,
       destination_account_id: destinationAccount,
-      metadata: { order_id: 'order_9831', customer_email: 'finance@startup.io' },
+      metadata: { source: 'api_playground', initiated_by: user?.username || 'operator' },
     };
 
     const headers: any = {
       'Content-Type': 'application/json'
     };
 
+    const effectiveKey = apiKey || localStorage.getItem('payrail_gateway_key') || '';
     if (authMode === 'bearer') {
-      headers['Authorization'] = `Bearer ${apiKey}`;
-      const curl = `curl -X POST ${API_BASE_URL}/v1/payment_intents \\\n  -H "Authorization: Bearer ${apiKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(body, null, 2)}'`;
+      headers['Authorization'] = `Bearer ${effectiveKey}`;
+      const curl = `curl -X POST ${API_BASE_URL}/v1/payment_intents \\\n  -H "Authorization: Bearer ${effectiveKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(body, null, 2)}'`;
       setCurlCommand(curl);
     } else {
-      // B2B routing doesn't require Bearer tokens for intent creation, just standard B2B checks or Bearer bypass
-      headers['Authorization'] = `Bearer sk_live_dev_key_12345`; // Dev key fallback for intent creation
-      const curl = `curl -X POST ${API_BASE_URL}/v1/payment_intents \\\n  -H "Authorization: Bearer sk_live_dev_key_12345" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(body, null, 2)}'`;
+      headers['Authorization'] = `Bearer ${effectiveKey}`;
+      const curl = `curl -X POST ${API_BASE_URL}/v1/payment_intents \\\n  -H "Authorization: Bearer ${effectiveKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(body, null, 2)}'`;
       setCurlCommand(curl);
     }
 

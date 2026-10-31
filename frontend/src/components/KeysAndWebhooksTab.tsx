@@ -44,6 +44,11 @@ export default function KeysAndWebhooksTab({ refreshTrigger }: KeysAndWebhooksTa
   const [webhookUrl, setWebhookUrl] = useState('');
   const [webhookEvents, setWebhookEvents] = useState('payment_intent.succeeded');
 
+  // Security question setup
+  const [secQuestion, setSecQuestion] = useState('What was the name of your first financial institution?');
+  const [secAnswer, setSecAnswer] = useState('');
+  const [secMsg, setSecMsg] = useState('');
+
   useEffect(() => {
     const fetchData = async () => {
       try {
@@ -79,8 +84,8 @@ export default function KeysAndWebhooksTab({ refreshTrigger }: KeysAndWebhooksTa
       if (res.ok) {
         const data = await res.json();
         setNewRawKey(data.rawKey);
+        localStorage.setItem('payrail_gateway_key', data.rawKey);
         setKeyName('');
-        // Refresh key list
         const keysRes = await fetch(`${API_BASE_URL}/console/api_keys`);
         if (keysRes.ok) setKeys(await keysRes.json());
       }
@@ -119,7 +124,6 @@ export default function KeysAndWebhooksTab({ refreshTrigger }: KeysAndWebhooksTa
 
       if (res.ok) {
         setWebhookUrl('');
-        // Refresh endpoints
         const epsRes = await fetch(`${API_BASE_URL}/console/webhook_endpoints`);
         if (epsRes.ok) setEndpoints(await epsRes.json());
       }
@@ -142,12 +146,33 @@ export default function KeysAndWebhooksTab({ refreshTrigger }: KeysAndWebhooksTa
     }
   };
 
+  const handleSaveSecurityQuestion = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSecMsg('');
+    try {
+      const res = await fetch(`${API_BASE_URL}/console/auth/setup_security_questions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: secQuestion, answer: secAnswer }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setSecMsg('✅ Security recovery question saved (SHA-256 hashed).');
+        setSecAnswer('');
+      } else {
+        setSecMsg(`❌ ${data.error || 'Failed to save security question.'}`);
+      }
+    } catch {
+      setSecMsg('❌ Network error.');
+    }
+  };
+
   if (loading) {
     return <div style={{ color: 'var(--text-secondary)' }}>Loading keys and webhook dashboards...</div>;
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '28px' }}>
       
       {/* API Keys Section */}
       <div className="grid-main-aside">
@@ -177,7 +202,7 @@ export default function KeysAndWebhooksTab({ refreshTrigger }: KeysAndWebhooksTa
                     <td>{new Date(k.created_at).toLocaleDateString()}</td>
                     <td>
                       {k.status === 'active' && (
-                        <button className="button button-secondary button-danger" style={{ padding: '4px 8px', fontSize: '11px' }} onClick={() => handleRevokeKey(k.id)}>
+                        <button className="btn btn-danger btn-sm" onClick={() => handleRevokeKey(k.id)}>
                           Revoke
                         </button>
                       )}
@@ -203,21 +228,21 @@ export default function KeysAndWebhooksTab({ refreshTrigger }: KeysAndWebhooksTa
                 required
               />
             </div>
-            <button type="submit" className="button">Generate Live Key</button>
+            <button type="submit" className="btn btn-primary" style={{ marginTop: 10 }}>Generate Live Key</button>
           </form>
 
           {newRawKey && (
             <div style={{ 
-              marginTop: '16px', 
+              marginTop: '12px', 
               padding: '16px', 
               borderRadius: '8px', 
-              background: 'rgba(34, 197, 94, 0.1)', 
-              border: '1px solid rgba(34, 197, 94, 0.2)' 
+              background: 'rgba(16, 185, 129, 0.1)', 
+              border: '1px solid rgba(16, 185, 129, 0.25)' 
             }}>
-              <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--accent-green)', marginBottom: '8px' }}>
+              <div style={{ fontSize: '12px', fontWeight: 700, color: '#34d399', marginBottom: '8px' }}>
                 ⚠️ SAVE THIS KEY (ONLY SHOWN ONCE):
               </div>
-              <code style={{ fontFamily: 'var(--font-mono)', wordBreak: 'break-all', fontSize: '13px', display: 'block', padding: '8px', background: '#000', borderRadius: '4px' }}>
+              <code style={{ fontFamily: 'var(--font-mono)', wordBreak: 'break-all', fontSize: '13px', display: 'block', padding: '8px', background: '#000', borderRadius: '4px', color: '#86efac' }}>
                 {newRawKey}
               </code>
             </div>
@@ -255,7 +280,7 @@ export default function KeysAndWebhooksTab({ refreshTrigger }: KeysAndWebhooksTa
                         </span>
                       </td>
                       <td>
-                        <button className="button button-secondary button-danger" style={{ padding: '4px 8px', fontSize: '11px' }} onClick={() => handleDeleteWebhook(ep.id)}>
+                        <button className="btn btn-danger btn-sm" onClick={() => handleDeleteWebhook(ep.id)}>
                           Delete
                         </button>
                       </td>
@@ -289,9 +314,29 @@ export default function KeysAndWebhooksTab({ refreshTrigger }: KeysAndWebhooksTa
                 <option value="*">All Events (*)</option>
               </select>
             </div>
-            <button type="submit" className="button">Add Webhook URL</button>
+            <button type="submit" className="btn btn-primary">Add Webhook URL</button>
           </form>
         </div>
+      </div>
+
+      {/* Security Question Configuration */}
+      <div className="glass-panel">
+        <h3 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '6px' }}>🛡️ Step-2 Account Recovery Question</h3>
+        <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '16px' }}>
+          Configure a SHA-256 hashed security question for zero-knowledge password recovery on the login screen.
+        </p>
+        <form onSubmit={handleSaveSecurityQuestion} style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <div className="form-group" style={{ flex: '2 1 280px', marginBottom: 0 }}>
+            <label className="form-label">Recovery Question</label>
+            <input className="form-input" value={secQuestion} onChange={e => setSecQuestion(e.target.value)} required />
+          </div>
+          <div className="form-group" style={{ flex: '1 1 200px', marginBottom: 0 }}>
+            <label className="form-label">Secret Answer</label>
+            <input className="form-input" type="password" placeholder="Enter recovery answer" value={secAnswer} onChange={e => setSecAnswer(e.target.value)} required />
+          </div>
+          <button type="submit" className="btn btn-secondary">Save Recovery Question</button>
+        </form>
+        {secMsg && <div style={{ marginTop: 10, fontSize: 13, fontWeight: 600, color: secMsg.startsWith('✅') ? '#34d399' : '#f87171' }}>{secMsg}</div>}
       </div>
 
       {/* Webhook Delivery Logs */}
