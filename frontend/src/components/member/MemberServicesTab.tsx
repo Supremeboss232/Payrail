@@ -18,7 +18,7 @@ interface CatalogService {
 
 type LiveTool = 'fx' | 'ofac' | 'otp' | 'credit';
 
-export default function MemberServicesTab({ gatewayKey }: Props) {
+export default function MemberServicesTab({ gatewayKey: _gatewayKey }: Props) {
   const [services, setServices] = useState<CatalogService[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTool, setActiveTool] = useState<LiveTool>('fx');

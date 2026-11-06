@@ -474,6 +474,12 @@ export default function MemberPaymentsTab({ gatewayKey, onSuccess }: Props) {
                     />
                   </div>
                   <div className="form-group">
+                    <label className="form-label">Currency</label>
+                    <select className="form-select" value={cardCurrency} onChange={e => setCardCurrency(e.target.value)}>
+                      {['USD', 'EUR', 'GBP', 'NGN'].map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+                  <div className="form-group">
                     <label className="form-label">Card Form Factor</label>
                     <select className="form-select" value={cardType} onChange={e => setCardType(e.target.value as any)}>
                       <option value="virtual">Virtual Instant Card</option>
