@@ -198,7 +198,11 @@ router.post('/register', async (req: Request, res: Response) => {
       });
 
       if (connector_config && typeof connector_config === 'object') {
-        const encrypted = encryptCredentials(connector_config, ENCRYPTION_KEY);
+        const enrichedConfig = {
+          settlement_mode: 'rtgs_webhook',
+          ...connector_config,
+        };
+        const encrypted = encryptCredentials(enrichedConfig, ENCRYPTION_KEY);
         await railDb.execute({
           sql: 'UPDATE funding_sources SET credentials_encrypted = ? WHERE id = ?',
           args: [encrypted, fundingSourceId]
@@ -286,11 +290,20 @@ router.post('/login', async (req: Request, res: Response) => {
       }
     }
 
-    // Provision a session Gateway API Key so the UI console and API playground can make live calls without hardcoded keys
+    // Provision a session Gateway API Key (clean up prior Console Session Keys first so they don't accumulate)
     const keyScopeTenant = user.role === 'member' ? user.tenant_id : null;
+    const sessionKeyName = `${legalName} Console Session Key`;
     let sessionGatewayKey = '';
     try {
-      const keyRes = await generateApiKey(`${legalName} Console Session Key`, keyScopeTenant);
+      await vaultDb.execute({
+        sql: "DELETE FROM api_keys WHERE name = ?",
+        args: [sessionKeyName]
+      });
+      await railDb.execute({
+        sql: "DELETE FROM synced_api_keys WHERE name = ?",
+        args: [sessionKeyName]
+      });
+      const keyRes = await generateApiKey(sessionKeyName, keyScopeTenant);
       sessionGatewayKey = keyRes.rawKey;
     } catch (keyErr: any) {
       console.warn('⚠️ Failed to provision session gateway key on login:', keyErr.message);

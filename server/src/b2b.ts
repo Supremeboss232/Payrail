@@ -120,7 +120,14 @@ export async function generateMerkleHash(txId: string, description: string, refe
 /**
  * ISO 20022 Pacs.008 (Customer Credit Transfer) XML message builder.
  */
-export function buildPacs008(pi: { id: string; amount: number; currency: string; destination_account_id: string }, sourceBic: string, destBic: string): string {
+export function buildPacs008(
+  pi: { id: string; amount: number; currency: string; destination_account_id: string },
+  sourceBic: string,
+  destBic: string,
+  debtorName = 'Originating Member Institution',
+  creditorName = 'Receiving Settlement Account',
+  settlementMethod: 'CLRG' | 'INGA' | 'INDA' = 'CLRG'
+): string {
   const amountStr = (pi.amount / 100).toFixed(2);
   const timestamp = new Date().toISOString();
 
@@ -132,17 +139,22 @@ export function buildPacs008(pi: { id: string; amount: number; currency: string;
       <CreDtTm>${timestamp}</CreDtTm>
       <NbOfTxs>1</NbOfTxs>
       <SttlmInf>
-        <SttlmMtd>CLRG</SttlmMtd>
+        <SttlmMtd>${settlementMethod}</SttlmMtd>
+        <ClrSys>
+          <Prtry>PAYRAIL_SOVEREIGN_SWITCH</Prtry>
+        </ClrSys>
       </SttlmInf>
     </GrpHdr>
     <CdtTrfTxInf>
       <PmtId>
+        <InstrId>INSTR_${pi.id}</InstrId>
         <EndToEndId>${pi.id}</EndToEndId>
         <UETR>${crypto.randomUUID()}</UETR>
       </PmtId>
       <IntrBkSttlmAmt Ccy="${pi.currency}">${amountStr}</IntrBkSttlmAmt>
+      <ChrgBr>SLEV</ChrgBr>
       <Dbtr>
-        <Nm>B2B Client Gateway Originator</Nm>
+        <Nm>${debtorName}</Nm>
       </Dbtr>
       <DbtrAgt>
         <FinInstnId>
@@ -155,7 +167,7 @@ export function buildPacs008(pi: { id: string; amount: number; currency: string;
         </FinInstnId>
       </CdtrAgt>
       <Cdtr>
-        <Nm>Merchant Settlement Wallet</Nm>
+        <Nm>${creditorName}</Nm>
       </Cdtr>
       <CdtrAcct>
         <Id>
@@ -166,6 +178,118 @@ export function buildPacs008(pi: { id: string; amount: number; currency: string;
       </CdtrAcct>
     </CdtTrfTxInf>
   </FIToFICstmrCdtTrf>
+</Document>`.trim();
+}
+
+/**
+ * ISO 20022 Pacs.002.001.10 (FIToFIPaymentStatusReport) XML message builder.
+ * Emitted immediately upon RTGS host webhook authorization or clearing rejection.
+ */
+export function buildPacs002(
+  originalMsgId: string,
+  status: 'ACCP' | 'ACSC' | 'RJCT',
+  sourceBic: string,
+  destBic: string,
+  reasonCode?: string,
+  additionalInfo?: string
+): string {
+  const timestamp = new Date().toISOString();
+  const reportId = `pacs002_${originalMsgId}_${Date.now()}`;
+  const statusReasonXml = reasonCode
+    ? `
+      <StsRsnInf>
+        <Rsn>
+          <Cd>${reasonCode}</Cd>
+        </Rsn>${additionalInfo ? `\n        <AddtlInf>${additionalInfo.replace(/[<>&]/g, '')}</AddtlInf>` : ''}
+      </StsRsnInf>`
+    : '';
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.002.001.10">
+  <FIToFIPmtStsRpt>
+    <GrpHdr>
+      <MsgId>${reportId}</MsgId>
+      <CreDtTm>${timestamp}</CreDtTm>
+      <InstgAgt>
+        <FinInstnId>
+          <BICFI>${sourceBic}</BICFI>
+        </FinInstnId>
+      </InstgAgt>
+      <InstdAgt>
+        <FinInstnId>
+          <BICFI>${destBic}</BICFI>
+        </FinInstnId>
+      </InstdAgt>
+    </GrpHdr>
+    <TxInfAndSts>
+      <OrgnlGrpInf>
+        <OrgnlMsgId>${originalMsgId}</OrgnlMsgId>
+        <OrgnlMsgNmId>pacs.008.001.08</OrgnlMsgNmId>
+      </OrgnlGrpInf>
+      <OrgnlEndToEndId>${originalMsgId}</OrgnlEndToEndId>
+      <TxSts>${status}</TxSts>${statusReasonXml}
+      <AccptncDtTm>${timestamp}</AccptncDtTm>
+    </TxInfAndSts>
+  </FIToFIPmtStsRpt>
+</Document>`.trim();
+}
+
+/**
+ * ISO 20022 Pacs.004.001.09 (PaymentReturn) XML message builder for automated reversals & returns.
+ */
+export function buildPacs004(
+  returnId: string,
+  originalPiId: string,
+  amount: number,
+  currency: string,
+  reasonCode: string,
+  reasonDescription: string,
+  sourceBic: string,
+  destBic: string
+): string {
+  const amountStr = (amount / 100).toFixed(2);
+  const timestamp = new Date().toISOString();
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.004.001.09">
+  <PmtRtr>
+    <GrpHdr>
+      <MsgId>${returnId}</MsgId>
+      <CreDtTm>${timestamp}</CreDtTm>
+      <NbOfTxs>1</NbOfTxs>
+      <SttlmInf>
+        <SttlmMtd>CLRG</SttlmMtd>
+        <ClrSys>
+          <Prtry>PAYRAIL_SOVEREIGN_SWITCH</Prtry>
+        </ClrSys>
+      </SttlmInf>
+    </GrpHdr>
+    <TxInf>
+      <RtrId>${returnId}</RtrId>
+      <OrgnlGrpInf>
+        <OrgnlMsgId>${originalPiId}</OrgnlMsgId>
+        <OrgnlMsgNmId>pacs.008.001.08</OrgnlMsgNmId>
+      </OrgnlGrpInf>
+      <OrgnlEndToEndId>${originalPiId}</OrgnlEndToEndId>
+      <RtrdIntrBkSttlmAmt Ccy="${currency}">${amountStr}</RtrdIntrBkSttlmAmt>
+      <InstgAgt>
+        <FinInstnId>
+          <BICFI>${sourceBic}</BICFI>
+        </FinInstnId>
+      </InstgAgt>
+      <InstdAgt>
+        <FinInstnId>
+          <BICFI>${destBic}</BICFI>
+        </FinInstnId>
+      </InstdAgt>
+      <RtrRsnInf>
+        <Rsn>
+          <Cd>${reasonCode || 'CUST'}</Cd>
+        </Rsn>
+        <AddtlInf>${(reasonDescription || 'Sovereign Switch Payment Return').replace(/[<>&]/g, '')}</AddtlInf>
+      </RtrRsnInf>
+    </TxInf>
+  </PmtRtr>
 </Document>`.trim();
 }
 
@@ -185,6 +309,9 @@ export function buildPacs009(txId: string, amount: number, currency: string, sou
       <NbOfTxs>1</NbOfTxs>
       <SttlmInf>
         <SttlmMtd>COVE</SttlmMtd>
+        <ClrSys>
+          <Prtry>PAYRAIL_MULTILATERAL_DNS</Prtry>
+        </ClrSys>
       </SttlmInf>
     </GrpHdr>
     <CdtTrfTxInf>
@@ -194,18 +321,25 @@ export function buildPacs009(txId: string, amount: number, currency: string, sou
       </PmtId>
       <IntrBkSttlmAmt Ccy="${currency}">${amountStr}</IntrBkSttlmAmt>
       <Dbtr>
-        <Nm>Bank Core Settlement Reserve</Nm>
+        <FinInstnId>
+          <BICFI>${destBic}</BICFI>
+        </FinInstnId>
       </Dbtr>
       <DbtrAgt>
         <FinInstnId>
-          <BICFI>${sourceBic}</BICFI>
+          <BICFI>${destBic}</BICFI>
         </FinInstnId>
       </DbtrAgt>
       <CdtrAgt>
         <FinInstnId>
-          <BICFI>${destBic}</BICFI>
+          <BICFI>${sourceBic}</BICFI>
         </FinInstnId>
       </CdtrAgt>
+      <Cdtr>
+        <FinInstnId>
+          <BICFI>${sourceBic}</BICFI>
+        </FinInstnId>
+      </Cdtr>
     </CdtTrfTxInf>
   </FICdtTrf>
 </Document>`.trim();

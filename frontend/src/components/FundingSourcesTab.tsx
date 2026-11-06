@@ -29,6 +29,7 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
   const [fsAccountId, setFsAccountId] = useState('');
   const [fsPriority, setFsPriority] = useState('1');
   const [fsConnectorType, setFsConnectorType] = useState<'http_callback' | 'web3_rpc'>('http_callback');
+  const [fsSettlementMode, setFsSettlementMode] = useState<'rtgs_webhook' | 'prefunded_pool'>('rtgs_webhook');
   const [fsEndpointUrl, setFsEndpointUrl] = useState('');
 
   useEffect(() => {
@@ -63,9 +64,14 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
     if (!fsName || !fsAccountId) return;
 
     try {
-      const credentials = fsEndpointUrl.trim()
-        ? (fsConnectorType === 'web3_rpc' ? { rpc_url: fsEndpointUrl.trim() } : { url: fsEndpointUrl.trim(), method: 'POST' })
-        : undefined;
+      const credentials = {
+        settlement_mode: fsSettlementMode,
+        ...(fsEndpointUrl.trim()
+          ? fsConnectorType === 'web3_rpc'
+            ? { rpc_url: fsEndpointUrl.trim(), url: fsEndpointUrl.trim() }
+            : { url: fsEndpointUrl.trim(), method: 'POST' }
+          : {}),
+      };
 
       const res = await fetch(`${API_BASE_URL}/console/funding_sources`, {
         method: 'POST',
@@ -144,38 +150,39 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-        <button className="button" onClick={() => setIsAddOpen(true)}>
-          <span>➕</span> Link Funding Source
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h3 style={{ fontSize: 16, fontWeight: 700 }}>Smart Route Priority Waterfall & Connectors</h3>
+          <p style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 2 }}>
+            Funding sources are scoped per member bank first, then fall back down the priority queue.
+          </p>
+        </div>
+        <button className="btn btn-primary" onClick={() => setIsAddOpen(true)}>
+          <span>➕</span> Link Funding Connector
         </button>
       </div>
 
       <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-        <h3 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '4px' }}>Gateway Routing Failover Priority</h3>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '14px', marginBottom: '16px' }}>
-          Define the order in which the payment rail pulls funds. When a payment intent is confirmed, the rail checks the first active funding source. If it fails (e.g. due to insufficient funds), the gateway dynamically swaps and fails-over to the next active method in the queue.
-        </p>
-
         <div className="funding-source-list">
           {sources.length === 0 ? (
             <div style={{ color: 'var(--text-muted)', fontSize: '14px', padding: '16px' }}>
-              No funding sources linked yet. Click "Link Funding Source" to bind your first bank/broker account to the routing gateway!
+              No funding sources linked yet. Click "Link Funding Connector" to bind your bank/broker/crypto rail to the Sovereign Switch!
             </div>
           ) : (
             sources.map((fs, index) => (
               <div key={fs.id} className="funding-source-item" style={{ opacity: fs.status === 'active' ? 1 : 0.5 }}>
                 <div style={{ display: 'flex', alignItems: 'center' }}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginRight: '16px' }}>
-                    <button 
-                      className="button button-secondary" 
+                    <button
+                      className="button button-secondary"
                       style={{ padding: '4px 8px', fontSize: '10px' }}
                       disabled={index === 0}
                       onClick={() => handleSwapPriority(index, 'up')}
                     >
                       ▲
                     </button>
-                    <button 
-                      className="button button-secondary" 
+                    <button
+                      className="button button-secondary"
                       style={{ padding: '4px 8px', fontSize: '10px' }}
                       disabled={index === sources.length - 1}
                       onClick={() => handleSwapPriority(index, 'down')}
@@ -186,7 +193,7 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
 
                   <div className="fs-details">
                     <div className="fs-name">
-                      {fs.name} 
+                      {fs.name}
                       <span className="fs-priority-badge">Priority #{fs.priority}</span>
                     </div>
                     <div className="fs-type">
@@ -200,7 +207,7 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
                     {fs.status}
                   </span>
 
-                  <button 
+                  <button
                     className={`button ${fs.status === 'active' ? 'button-secondary' : ''}`}
                     style={{ padding: '6px 12px', fontSize: '12px' }}
                     onClick={() => handleToggleStatus(fs)}
@@ -218,17 +225,17 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
         <div className="drawer-backdrop" onClick={() => setIsAddOpen(false)}>
           <div className="drawer" onClick={(e) => e.stopPropagation()}>
             <div className="drawer-header">
-              <h3 className="drawer-title">Link Live Funding Source</h3>
+              <h3 className="drawer-title">Link Live Funding Connector</h3>
               <button className="drawer-close" onClick={() => setIsAddOpen(false)}>×</button>
             </div>
 
             <form onSubmit={handleAddFundingSource} className="drawer-content">
               <div className="form-group">
                 <label className="form-label">Funding Source Name</label>
-                <input 
-                  type="text" 
-                  className="form-input" 
-                  placeholder="e.g. JPMorgan Treasury Reserve" 
+                <input
+                  type="text"
+                  className="form-input"
+                  placeholder="e.g. Finanza Financial Services Primary Reserves"
                   value={fsName}
                   onChange={e => setFsName(e.target.value)}
                   required
@@ -238,28 +245,44 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
               <div className="grid-2">
                 <div className="form-group">
                   <label className="form-label">Source Type</label>
-                  <select 
-                    className="form-select" 
-                    value={fsType} 
+                  <select
+                    className="form-select"
+                    value={fsType}
                     onChange={e => setFsType(e.target.value as any)}
                   >
-                    <option value="bank">Bank Account</option>
+                    <option value="bank">Bank Clearing Account</option>
                     <option value="broker">Broker Account</option>
-                    <option value="crypto">Crypto Wallet</option>
+                    <option value="crypto">Crypto / Web3 Wallet</option>
                     <option value="logistics">Logistics Account</option>
                   </select>
                 </div>
 
                 <div className="form-group">
                   <label className="form-label">Failover Priority</label>
-                  <input 
-                    type="number" 
-                    className="form-input" 
+                  <input
+                    type="number"
+                    className="form-input"
                     value={fsPriority}
                     onChange={e => setFsPriority(e.target.value)}
                     required
                   />
                 </div>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Settlement Authorization Mode</label>
+                <select
+                  className="form-select"
+                  value={fsSettlementMode}
+                  onChange={e => setFsSettlementMode(e.target.value as any)}
+                >
+                  <option value="rtgs_webhook">
+                    ⚡ Direct Host Authorization (RTGS Webhook / Interbank Credit Line — No Pre-Funded Balance Needed)
+                  </option>
+                  <option value="prefunded_pool">
+                    🏦 Pre-Funded Reserve Pool (Requires Positive Balance on Payrail Ledger)
+                  </option>
+                </select>
               </div>
 
               <div className="form-group">
@@ -288,15 +311,15 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
               </div>
 
               <div className="form-group">
-                <label className="form-label">Link to Ledger Account (Debit Source)</label>
+                <label className="form-label">Link to Ledger Account (Clearing / Debit Source)</label>
                 {accounts.length === 0 ? (
                   <div style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
                     No asset accounts configured. Create an asset account in the Ledger tab first!
                   </div>
                 ) : (
-                  <select 
-                    className="form-select" 
-                    value={fsAccountId} 
+                  <select
+                    className="form-select"
+                    value={fsAccountId}
                     onChange={e => setFsAccountId(e.target.value)}
                   >
                     {accounts.map((a, idx) => (
@@ -306,8 +329,8 @@ export default function FundingSourcesTab({ refreshTrigger, onUpdate }: FundingS
                 )}
               </div>
 
-              <button type="submit" className="button" style={{ marginTop: '16px' }} disabled={accounts.length === 0}>
-                Link Funding Source
+              <button type="submit" className="btn btn-primary" style={{ marginTop: '16px' }} disabled={accounts.length === 0}>
+                Link Funding Connector
               </button>
             </form>
           </div>

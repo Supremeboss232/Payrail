@@ -145,6 +145,7 @@ app.get('/console/funding_sources', async (req, res) => {
 // Returns all registered member banks with their clearing account balances and funding sources
 app.get('/console/banks', async (req, res) => {
   try {
+    const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'payment-rail-master-default-key-12345';
     const tenantsResult = await railDb.execute(
       "SELECT * FROM tenants WHERE routing_code != 'PAYRAIL_SYSTEM_BIC' ORDER BY created_at ASC"
     );
@@ -152,20 +153,43 @@ app.get('/console/banks', async (req, res) => {
     const banks = await Promise.all(tenantsResult.rows.map(async (tenant: any) => {
       // Find their primary clearing account
       const accResult = await railDb.execute({
-        sql: 'SELECT id, balance FROM accounts WHERE tenant_id = ? AND category = ? ORDER BY created_at ASC LIMIT 1',
+        sql: 'SELECT id, balance, currency FROM accounts WHERE tenant_id = ? AND category = ? ORDER BY created_at ASC LIMIT 1',
         args: [tenant.id, 'bank']
       });
       const clearingAccount = accResult.rows[0] as any;
 
       // Find linked funding source
-      let fundingSource = null;
+      let fundingSource: any = null;
+      let settlementMode = 'rtgs_webhook';
+      let endpointUrl: string | null = null;
       try {
         const fsResult = await railDb.execute({
-          sql: 'SELECT id, connector_type, status, priority FROM funding_sources WHERE account_id = ? ORDER BY priority ASC LIMIT 1',
+          sql: 'SELECT id, name, connector_type, status, priority, credentials_encrypted FROM funding_sources WHERE account_id = ? ORDER BY priority ASC LIMIT 1',
           args: [clearingAccount?.id || '']
         });
-        if (fsResult.rows.length > 0) fundingSource = fsResult.rows[0];
+        if (fsResult.rows.length > 0) {
+          const rawFs = fsResult.rows[0] as any;
+          if (rawFs.credentials_encrypted) {
+            try {
+              const dec = decryptCredentials(rawFs.credentials_encrypted, ENCRYPTION_KEY);
+              if (dec?.settlement_mode) settlementMode = dec.settlement_mode;
+              endpointUrl = dec?.url || dec?.rpc_url || null;
+            } catch {}
+          }
+          fundingSource = {
+            id: rawFs.id,
+            name: rawFs.name,
+            connector_type: rawFs.connector_type,
+            status: rawFs.status,
+            priority: rawFs.priority,
+            has_credentials: !!rawFs.credentials_encrypted,
+            settlement_mode: settlementMode,
+            endpoint_url: endpointUrl
+          };
+        }
       } catch {}
+
+      const bal = Number(clearingAccount?.balance ?? 0);
 
       return {
         id: tenant.id,
@@ -175,11 +199,88 @@ app.get('/console/banks', async (req, res) => {
         created_at: tenant.created_at,
         clearing_account: clearingAccount?.id || null,
         clearing_balance: clearingAccount?.balance ?? null,
+        currency: clearingAccount?.currency || 'USD',
+        net_position: bal < 0 ? 'NET_PAYABLE' : bal > 0 ? 'NET_RECEIVABLE' : 'SETTLED_FLAT',
+        settlement_mode: settlementMode,
+        endpoint_url: endpointUrl,
         funding_source: fundingSource
       };
     }));
 
     res.json(banks);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ── PATCH /console/banks/:id/connector ────────────────────────────────────────
+// Updates a member bank's settlement mode ('rtgs_webhook' vs 'prefunded_pool') and/or live webhook URL
+app.patch('/console/banks/:id/connector', async (req, res) => {
+  const { id } = req.params;
+  const { connector_type, settlement_mode, url, method = 'POST', headers } = req.body || {};
+  try {
+    const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'payment-rail-master-default-key-12345';
+    const accResult = await railDb.execute({
+      sql: 'SELECT id FROM accounts WHERE tenant_id = ? AND category = ? ORDER BY created_at ASC LIMIT 1',
+      args: [id, 'bank']
+    });
+    const clearingAccount = accResult.rows[0] as any;
+    if (!clearingAccount) {
+      res.status(404).json({ error: 'No clearing account found for this member bank.' });
+      return;
+    }
+
+    const fsResult = await railDb.execute({
+      sql: 'SELECT * FROM funding_sources WHERE account_id = ? ORDER BY priority ASC LIMIT 1',
+      args: [clearingAccount.id]
+    });
+
+    let fsId = '';
+    let existingCreds: any = {};
+    if (fsResult.rows.length > 0) {
+      const fs = fsResult.rows[0] as any;
+      fsId = fs.id;
+      if (fs.credentials_encrypted) {
+        try {
+          existingCreds = decryptCredentials(fs.credentials_encrypted, ENCRYPTION_KEY) || {};
+        } catch {}
+      }
+      if (connector_type) {
+        await railDb.execute({
+          sql: 'UPDATE funding_sources SET connector_type = ? WHERE id = ?',
+          args: [connector_type, fsId]
+        });
+      }
+    } else {
+      fsId = `fs_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+      await railDb.execute({
+        sql: `INSERT INTO funding_sources (id, name, type, account_id, priority, status, connector_type, created_at)
+              VALUES (?, 'Primary Bank Connector', 'bank', ?, 1, 'active', ?, ?)`,
+        args: [fsId, clearingAccount.id, connector_type || 'http_callback', new Date().toISOString()]
+      });
+    }
+
+    const updatedCreds = {
+      ...existingCreds,
+      ...(settlement_mode ? { settlement_mode } : {}),
+      ...(url !== undefined ? { url, rpc_url: url } : {}),
+      ...(method ? { method } : {}),
+      ...(headers ? { headers } : {})
+    };
+
+    const encrypted = encryptCredentials(updatedCreds, ENCRYPTION_KEY);
+    await railDb.execute({
+      sql: 'UPDATE funding_sources SET credentials_encrypted = ? WHERE id = ?',
+      args: [encrypted, fsId]
+    });
+
+    res.json({
+      success: true,
+      funding_source_id: fsId,
+      settlement_mode: updatedCreds.settlement_mode || 'rtgs_webhook',
+      endpoint_url: updatedCreds.url || null,
+      message: 'Bank connector & settlement mode updated.'
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -324,6 +425,7 @@ app.post('/console/settings/providers', async (req, res) => {
   const updatedKeys: string[] = [];
 
   try {
+    const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'payment-rail-master-default-key-12345';
     for (const key of CONFIGURABLE_PROVIDER_KEYS) {
       if (updates[key] !== undefined) {
         const val = String(updates[key]).trim();
@@ -332,21 +434,106 @@ app.post('/console/settings/providers', async (req, res) => {
           await vaultDb.execute({ sql: 'DELETE FROM system_settings WHERE key = ?', args: [key] });
         } else {
           process.env[key] = val;
+          const encryptedVal = `enc:${encryptCredentials({ v: val }, ENCRYPTION_KEY)}`;
           await vaultDb.execute({
             sql: `INSERT OR IGNORE INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)`,
-            args: [key, val, now]
+            args: [key, encryptedVal, now]
           });
           await vaultDb.execute({
             sql: `UPDATE system_settings SET value = ?, updated_at = ? WHERE key = ?`,
-            args: [val, now, key]
+            args: [encryptedVal, now, key]
           });
         }
         updatedKeys.push(key);
       }
     }
-    res.json({ success: true, updated_keys: updatedKeys, message: 'Live provider credentials updated and applied immediately.' });
+    res.json({ success: true, updated_keys: updatedKeys, message: 'Live provider credentials encrypted at rest and applied immediately.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET /console/payment_intents ──────────────────────────────────────────────
+// Returns recent payment intents for inspection and 1-click ISO 20022 pacs.004 reversal
+app.get('/console/payment_intents', async (req, res) => {
+  try {
+    const result = await railDb.execute('SELECT * FROM payment_intents ORDER BY created_at DESC LIMIT 100');
+    res.json(result.rows);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ── GET /console/settlements/net_positions ────────────────────────────────────
+// Returns real-time Multilateral Clearing & Netting Matrix across all member institutions
+app.get('/console/settlements/net_positions', async (req, res) => {
+  try {
+    const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'payment-rail-master-default-key-12345';
+    const tenantsRes = await railDb.execute(
+      "SELECT id, legal_name, routing_code, api_status, created_at FROM tenants WHERE routing_code != 'PAYRAIL_SYSTEM_BIC' ORDER BY created_at ASC"
+    );
+
+    const positions = await Promise.all(
+      (tenantsRes.rows as any[]).map(async (t) => {
+        const accRes = await railDb.execute({
+          sql: "SELECT id, name, balance, currency FROM accounts WHERE tenant_id = ? AND category = 'bank' ORDER BY created_at ASC LIMIT 1",
+          args: [t.id],
+        });
+        const acc = accRes.rows[0] as any;
+        const balanceCents = acc ? Number(acc.balance) : 0;
+
+        let connectorType = 'http_callback';
+        let settlementMode = 'rtgs_webhook';
+        let hasLiveEndpoint = false;
+        if (acc?.id) {
+          const fsRes = await railDb.execute({
+            sql: 'SELECT id, connector_type, credentials_encrypted FROM funding_sources WHERE account_id = ? ORDER BY priority ASC LIMIT 1',
+            args: [acc.id],
+          });
+          if (fsRes.rows.length > 0) {
+            const fs = fsRes.rows[0] as any;
+            connectorType = fs.connector_type || 'http_callback';
+            hasLiveEndpoint = !!fs.credentials_encrypted;
+            if (fs.credentials_encrypted) {
+              try {
+                const dec = decryptCredentials(fs.credentials_encrypted, ENCRYPTION_KEY);
+                if (dec?.settlement_mode) settlementMode = dec.settlement_mode;
+              } catch {}
+            }
+          }
+        }
+
+        return {
+          tenant_id: t.id,
+          legal_name: t.legal_name || t.name,
+          routing_code: t.routing_code,
+          status: t.api_status || 'active',
+          clearing_account_id: acc?.id || null,
+          currency: acc?.currency || 'USD',
+          clearing_balance_cents: balanceCents,
+          net_position:
+            balanceCents < 0 ? 'NET_PAYABLE' : balanceCents > 0 ? 'NET_RECEIVABLE' : 'SETTLED_FLAT',
+          net_obligation_cents: balanceCents < 0 ? Math.abs(balanceCents) : 0,
+          net_surplus_cents: balanceCents > 0 ? balanceCents : 0,
+          connector_type: connectorType,
+          settlement_mode: settlementMode,
+          has_live_endpoint: hasLiveEndpoint,
+        };
+      })
+    );
+
+    const totalPayableCents = positions.reduce((sum, p) => sum + p.net_obligation_cents, 0);
+    const totalReceivableCents = positions.reduce((sum, p) => sum + p.net_surplus_cents, 0);
+
+    res.json({
+      timestamp: new Date().toISOString(),
+      institution_count: positions.length,
+      total_net_payable_cents: totalPayableCents,
+      total_net_receivable_cents: totalReceivableCents,
+      positions,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -1190,6 +1377,13 @@ app.post('/v1/banks/test_connection', async (req, res) => {
   if (!connector_type) {
     res.status(400).json({ error: 'connector_type is required.' });
     return;
+  }
+  if (url && typeof url === 'string') {
+    const lowerUrl = url.toLowerCase();
+    if (lowerUrl.includes('169.254.') || lowerUrl.includes('metadata.google.internal')) {
+      res.status(400).json({ error: 'Forbidden URL target (cloud metadata address blocked by SSRF policy).' });
+      return;
+    }
   }
   if (connector_type === 'http_callback') {
     if (!url) {

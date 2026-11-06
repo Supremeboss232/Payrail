@@ -603,12 +603,21 @@ export async function initDb() {
     );
   `);
 
-  // Hydrate process.env with any persisted system_settings from vaultDb
+  // Hydrate process.env with any persisted system_settings from vaultDb (supports AES-256-GCM encrypted or plain values)
   try {
+    const { decryptCredentials } = await import('./crypto');
+    const encKey = process.env.ENCRYPTION_KEY || 'payment-rail-master-default-key-12345';
     const settingsRes = await vaultDb.execute('SELECT key, value FROM system_settings');
     for (const row of settingsRes.rows as any[]) {
       if (row.key && row.value !== undefined && row.value !== '') {
-        process.env[row.key] = row.value;
+        let resolvedValue = String(row.value);
+        if (resolvedValue.startsWith('enc:')) {
+          try {
+            const dec = decryptCredentials(resolvedValue.slice(4), encKey);
+            if (dec && typeof dec.v === 'string') resolvedValue = dec.v;
+          } catch {}
+        }
+        process.env[row.key] = resolvedValue;
       }
     }
   } catch (e: any) {

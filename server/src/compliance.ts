@@ -55,14 +55,91 @@ export async function ensureSdnLoaded(): Promise<void> {
 }
 
 /**
- * Checks a name against the locally cached OFAC SDN list.
+ * Computes Jaro-Winkler similarity (0.0 to 1.0) between two uppercase strings.
+ */
+function jaroWinkler(s1: string, s2: string): number {
+  if (s1 === s2) return 1.0;
+  const len1 = s1.length;
+  const len2 = s2.length;
+  if (len1 === 0 || len2 === 0) return 0.0;
+
+  const matchDistance = Math.floor(Math.max(len1, len2) / 2) - 1;
+  const s1Matches = new Array(len1).fill(false);
+  const s2Matches = new Array(len2).fill(false);
+
+  let matches = 0;
+  for (let i = 0; i < len1; i++) {
+    const start = Math.max(0, i - matchDistance);
+    const end = Math.min(i + matchDistance + 1, len2);
+    for (let j = start; j < end; j++) {
+      if (s2Matches[j]) continue;
+      if (s1[i] !== s2[j]) continue;
+      s1Matches[i] = true;
+      s2Matches[j] = true;
+      matches++;
+      break;
+    }
+  }
+  if (matches === 0) return 0.0;
+
+  let t = 0;
+  let k = 0;
+  for (let i = 0; i < len1; i++) {
+    if (!s1Matches[i]) continue;
+    while (!s2Matches[k]) k++;
+    if (s1[i] !== s2[k]) t++;
+    k++;
+  }
+  t /= 2;
+
+  const jaro = (matches / len1 + matches / len2 + (matches - t) / matches) / 3;
+  let prefix = 0;
+  for (let i = 0; i < Math.min(4, len1, len2); i++) {
+    if (s1[i] === s2[i]) prefix++;
+    else break;
+  }
+  return jaro + prefix * 0.1 * (1 - jaro);
+}
+
+/**
+ * Checks a name against the locally cached OFAC SDN list using word-boundary
+ * token matching and Jaro-Winkler similarity (threshold >= 0.90) to prevent
+ * short-name substring false positives while catching true sanctioned entities.
  */
 function checkLocalOfac(name: string): { matched: boolean; matchedEntry?: string } {
   if (!name || sdnCache.length === 0) return { matched: false };
-  const normalized = name.toUpperCase().trim();
-  const matched = sdnCache.find(
-    (entry) => entry.includes(normalized) || normalized.includes(entry)
-  );
+  const normalized = name.toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (normalized.length < 4) return { matched: false };
+
+  const queryTokens = normalized.split(' ').filter((t) => t.length >= 3);
+  if (queryTokens.length === 0) return { matched: false };
+
+  const matched = sdnCache.find((rawEntry) => {
+    const entry = rawEntry.replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!entry || entry.length < 4) return false;
+
+    // 1. Exact full-name match
+    if (entry === normalized) return true;
+
+    // 2. High Jaro-Winkler similarity across full entity strings (for 6+ char names)
+    if (normalized.length >= 6 && Math.abs(entry.length - normalized.length) <= 5) {
+      if (jaroWinkler(normalized, entry) >= 0.91) return true;
+    }
+
+    // 3. Multi-token exact word match (require at least 2 distinct tokens of >=4 chars to match)
+    if (queryTokens.length >= 2) {
+      const entryTokens = new Set(entry.split(' '));
+      const significantQueryTokens = queryTokens.filter((t) => t.length >= 4);
+      if (
+        significantQueryTokens.length >= 2 &&
+        significantQueryTokens.every((t) => entryTokens.has(t))
+      ) {
+        return true;
+      }
+    }
+
+    return false;
+  });
   return { matched: !!matched, matchedEntry: matched };
 }
 

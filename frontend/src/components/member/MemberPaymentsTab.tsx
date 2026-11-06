@@ -6,220 +6,683 @@ interface Props {
   onSuccess: () => void;
 }
 
-type ActiveForm = 'card' | 'ach' | 'intent';
+type ActiveDesk = 'switch_intent' | 'ach_wire' | 'card_vault' | 'returns_camt';
 
-interface ApiResult { ok: boolean; data: unknown; }
-
-function ResultPanel({ result, onClear }: { result: ApiResult; onClear: () => void }) {
-  const [copied, setCopied] = useState(false);
-  const copy = () => {
-    navigator.clipboard.writeText(JSON.stringify(result.data, null, 2));
-    setCopied(true); setTimeout(() => setCopied(false), 1500);
-  };
-  return (
-    <div style={{ marginTop: 16, borderRadius: 'var(--r-lg)', background: 'rgba(0,0,0,0.4)', border: `1px solid ${result.ok ? 'hsla(158,64%,46%,0.3)' : 'hsla(348,83%,60%,0.3)'}`, overflow: 'hidden' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', background: 'rgba(255,255,255,0.02)', borderBottom: '1px solid var(--border)' }}>
-        <span style={{ fontSize: 12, fontWeight: 700, color: result.ok ? 'var(--emerald)' : 'var(--rose)' }}>
-          {result.ok ? '✅ Success' : '❌ Error'}
-        </span>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={copy} className="btn btn-ghost btn-sm">{copied ? '✅ Copied' : '📋 Copy'}</button>
-          <button onClick={onClear} className="btn btn-ghost btn-sm">Clear</button>
-        </div>
-      </div>
-      <pre style={{ margin: 0, padding: '14px 16px', fontSize: 12, fontFamily: 'var(--font-mono)', color: result.ok ? '#86efac' : '#fca5a5', lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-        {JSON.stringify(result.data, null, 2)}
-      </pre>
-    </div>
-  );
+interface ApiResult {
+  ok: boolean;
+  data: any;
 }
 
-const FORMS: { key: ActiveForm; icon: string; label: string; desc: string }[] = [
-  { key: 'card',   icon: '💳', label: 'Issue Virtual Card',      desc: 'Create a new virtual card for a cardholder' },
-  { key: 'ach',    icon: '🏦', label: 'ACH / Wire Transfer',      desc: 'Initiate an ACH debit, credit, or wire' },
-  { key: 'intent', icon: '🚀', label: 'Payment Intent',           desc: 'Create and confirm a payment intent' },
-];
-
 export default function MemberPaymentsTab({ gatewayKey, onSuccess }: Props) {
-  const [activeForm, setActiveForm] = useState<ActiveForm>('card');
-  const [loading,    setLoading]    = useState(false);
-  const [result,     setResult]     = useState<ApiResult | null>(null);
+  const [activeDesk, setActiveDesk] = useState<ActiveDesk>('switch_intent');
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<ApiResult | null>(null);
 
-  // Card form
-  const [cardName,     setCardName]     = useState('');
-  const [cardLimit,    setCardLimit]    = useState('500000');
-  const [cardCurrency, setCardCurrency] = useState('USD');
+  // Live accounts, cards & payment intents
+  const [liveAccounts, setLiveAccounts] = useState<any[]>([]);
+  const [issuedCards, setIssuedCards] = useState<any[]>([]);
+  const [paymentIntents, setPaymentIntents] = useState<any[]>([]);
 
-  // ACH form
-  const [achFrom,     setAchFrom]     = useState('');
-  const [achTo,       setAchTo]       = useState('');
-  const [achAmount,   setAchAmount]   = useState('100');
-  const [achType,     setAchType]     = useState<'ach_debit'|'ach_credit'|'wire'>('ach_credit');
-  const [achDesc,     setAchDesc]     = useState('');
-
-  // Intent form
-  const [intAmount,   setIntAmount]   = useState('5000');
+  // 1. Switch Transfer (pacs.008 + pacs.002) state
+  const [intAmountUsd, setIntAmountUsd] = useState('250.00');
   const [intCurrency, setIntCurrency] = useState('USD');
-  const [intDest,     setIntDest]     = useState('');
-  const [liveAccounts, setLiveAccounts] = useState<{ id: string; name: string; currency: string }[]>([]);
+  const [intDest, setIntDest] = useState('');
 
-  useEffect(() => {
-    fetch(`${API_BASE_URL}/console/accounts`)
-      .then(r => r.ok ? r.json() : [])
-      .then(accs => {
-        if (Array.isArray(accs)) {
-          setLiveAccounts(accs);
-          if (accs.length > 0 && !achFrom) setAchFrom(accs[0].id);
-          if (accs.length > 0 && !intDest) setIntDest(accs[0].id);
-        }
-      })
-      .catch(() => {});
-  }, []);
+  // 2. ACH / Wire state
+  const [achFrom, setAchFrom] = useState('');
+  const [achTo, setAchTo] = useState('');
+  const [achAmountUsd, setAchAmountUsd] = useState('500.00');
+  const [achType, setAchType] = useState<'ach_credit' | 'ach_debit' | 'wire'>('ach_credit');
+  const [achDesc, setAchDesc] = useState('Interbank commercial settlement');
+
+  // 3. Card Issuing & Merchant Authorization state
+  const [cardName, setCardName] = useState('');
+  const [cardLimitUsd, setCardLimitUsd] = useState('5000');
+  const [cardCurrency, setCardCurrency] = useState('USD');
+  const [cardType, setCardType] = useState<'virtual' | 'physical'>('virtual');
+  const [authCardId, setAuthCardId] = useState('');
+  const [authMerchant, setAuthMerchant] = useState('Amazon Web Services');
+  const [authAmountUsd, setAuthAmountUsd] = useState('49.99');
+
+  // 4. Returns (pacs.004) & camt.053 Statement state
+  const [reverseReason, setReverseReason] = useState('CUST');
+  const [camtAccountId, setCamtAccountId] = useState('');
+  const [camtXml, setCamtXml] = useState('');
 
   const headers = () => ({
     'X-Gateway-API-Key': gatewayKey || localStorage.getItem('payrail_gateway_key') || '',
     'Content-Type': 'application/json',
   });
 
-  const callApi = async (url: string, body: object) => {
-    setLoading(true); setResult(null);
+  const loadWorkspaceData = async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}${url}`, { method: 'POST', headers: headers(), body: JSON.stringify(body) });
-      const data = await res.json();
-      setResult({ ok: res.ok, data });
-      if (res.ok) onSuccess();
+      const [accRes, cardsRes, piRes] = await Promise.all([
+        fetch(`${API_BASE_URL}/console/accounts`),
+        fetch(`${API_BASE_URL}/v1/gateway/cards`, { headers: headers() }),
+        fetch(`${API_BASE_URL}/console/payment_intents`),
+      ]);
+      if (accRes.ok) {
+        const accs = await accRes.json();
+        if (Array.isArray(accs)) {
+          setLiveAccounts(accs);
+          if (accs.length > 0 && !achFrom) setAchFrom(accs[0].id);
+          if (accs.length > 1 && !achTo) setAchTo(accs[1].id);
+          if (accs.length > 0 && !intDest) setIntDest(accs[0].id);
+          if (accs.length > 0 && !camtAccountId) setCamtAccountId(accs[0].id);
+        }
+      }
+      if (cardsRes.ok) {
+        const cData = await cardsRes.json();
+        const list = cData.cards || (Array.isArray(cData) ? cData : []);
+        setIssuedCards(list);
+        if (list.length > 0 && !authCardId) setAuthCardId(list[0].id);
+      }
+      if (piRes.ok) {
+        const piData = await piRes.json();
+        if (Array.isArray(piData)) setPaymentIntents(piData);
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    loadWorkspaceData();
+  }, [gatewayKey]);
+
+  // ── 1. Execute Instant Switch Transfer (pacs.008 + pacs.002) ──
+  const handleSwitchTransfer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setResult(null);
+    try {
+      const amountCents = Math.round(parseFloat(intAmountUsd) * 100);
+      const createRes = await fetch(`${API_BASE_URL}/v1/gateway/payment_intents`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({
+          amount_cents: amountCents,
+          currency: intCurrency,
+          destination_account_id: intDest,
+        }),
+      });
+      const createData = await createRes.json();
+      if (!createRes.ok) {
+        setResult({ ok: false, data: createData });
+        setLoading(false);
+        return;
+      }
+      const confirmRes = await fetch(`${API_BASE_URL}/v1/payment_intents/${createData.id}/confirm`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({}),
+      });
+      const confirmData = await confirmRes.json();
+      setResult({ ok: confirmRes.ok, data: confirmData });
+      if (confirmRes.ok) {
+        onSuccess();
+        loadWorkspaceData();
+      }
     } catch (err: any) {
       setResult({ ok: false, data: { error: err.message } });
-    } finally { setLoading(false); }
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  // ── 2. Execute ACH / Wire Origination ──
+  const handleAchWire = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (activeForm === 'card') callApi('/v1/gateway/cards/issue', { cardholder_name: cardName, credit_limit_cents: parseInt(cardLimit), currency: cardCurrency });
-    if (activeForm === 'ach')  callApi('/v1/gateway/payments/transfer', { from_account_id: achFrom, to_account_id: achTo, amount_cents: parseFloat(achAmount) * 100, type: achType, description: achDesc });
-    if (activeForm === 'intent') callApi('/v1/gateway/payment_intents', { amount_cents: parseInt(intAmount), currency: intCurrency, destination_account_id: intDest });
+    setLoading(true);
+    setResult(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/v1/gateway/payments/transfer`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({
+          from_account_id: achFrom,
+          to_account_id: achTo,
+          amount_cents: Math.round(parseFloat(achAmountUsd) * 100),
+          type: achType,
+          description: achDesc,
+        }),
+      });
+      const data = await res.json();
+      setResult({ ok: res.ok, data });
+      if (res.ok) {
+        onSuccess();
+        loadWorkspaceData();
+      }
+    } catch (err: any) {
+      setResult({ ok: false, data: { error: err.message } });
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const inp: React.CSSProperties = {
-    background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-medium)',
-    borderRadius: 'var(--r-md)', padding: '10px 14px', fontFamily: 'var(--font)',
-    fontSize: 14, color: 'var(--text-0)', width: '100%', outline: 'none',
+  // ── 3A. Issue Virtual / Physical Card ──
+  const handleIssueCard = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setResult(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/v1/gateway/cards/issue`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({
+          cardholder_name: cardName,
+          credit_limit_cents: Math.round(parseFloat(cardLimitUsd) * 100),
+          currency: cardCurrency,
+          type: cardType,
+        }),
+      });
+      const data = await res.json();
+      setResult({ ok: res.ok, data });
+      if (res.ok) {
+        setCardName('');
+        onSuccess();
+        loadWorkspaceData();
+      }
+    } catch (err: any) {
+      setResult({ ok: false, data: { error: err.message } });
+    } finally {
+      setLoading(false);
+    }
   };
+
+  // ── 3B. Freeze / Unfreeze / Cancel Card ──
+  const handleCardStatus = async (cardId: string, newStatus: string) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/v1/gateway/cards/${cardId}/status`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({ status: newStatus }),
+      });
+      const data = await res.json();
+      setResult({ ok: res.ok, data });
+      loadWorkspaceData();
+    } catch (err: any) {
+      setResult({ ok: false, data: { error: err.message } });
+    }
+  };
+
+  // ── 3C. Authorize Merchant Purchase on Card ──
+  const handleAuthorizeCardPurchase = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authCardId) return;
+    setLoading(true);
+    setResult(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/v1/gateway/cards/${authCardId}/authorize`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({
+          amount_cents: Math.round(parseFloat(authAmountUsd) * 100),
+          merchant_name: authMerchant,
+          mcc: '5734',
+        }),
+      });
+      const data = await res.json();
+      setResult({ ok: res.ok, data });
+      if (res.ok) {
+        onSuccess();
+        loadWorkspaceData();
+      }
+    } catch (err: any) {
+      setResult({ ok: false, data: { error: err.message } });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ── 4A. Reverse Settled Payment Intent (pacs.004) ──
+  const handleReverseIntent = async (intentId: string) => {
+    setLoading(true);
+    setResult(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/v1/payment_intents/${intentId}/reverse`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({
+          reason_code: reverseReason,
+          notes: 'Initiated from Partner Bank Executive Treasury Workstation',
+        }),
+      });
+      const data = await res.json();
+      setResult({ ok: res.ok, data });
+      if (res.ok) {
+        onSuccess();
+        loadWorkspaceData();
+      }
+    } catch (err: any) {
+      setResult({ ok: false, data: { error: err.message } });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ── 4B. Export ISO 20022 camt.053 XML Statement ──
+  const handleExportCamt053 = async () => {
+    if (!camtAccountId) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/console/accounts/${camtAccountId}/statement_xml`);
+      const xml = await res.text();
+      setCamtXml(xml);
+    } catch (err: any) {
+      setCamtXml(`<!-- Error exporting camt.053: ${err.message} -->`);
+    }
+  };
+
+  const DESKS: { key: ActiveDesk; icon: string; title: string; sub: string }[] = [
+    { key: 'switch_intent', icon: '⚡', title: 'Instant Switch Transfer', sub: 'ISO 20022 pacs.008 + pacs.002 RTGS' },
+    { key: 'ach_wire',      icon: '🏦', title: 'ACH & Fedwire Desk',      sub: 'Domestic & cross-border account rails' },
+    { key: 'card_vault',    icon: '💳', title: 'Card Issuing & Auth Vault', sub: 'Issue cards, freeze & simulate purchases' },
+    { key: 'returns_camt',  icon: '↩️', title: 'Returns (pacs.004) & camt.053', sub: 'Contra-entry reversals & XML statements' },
+  ];
+
+  const fmtUsd = (cents: number) =>
+    new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(cents / 100);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 24, maxWidth: 720 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
       <datalist id="member-live-accounts">
         {liveAccounts.map((a, idx) => (
           <option key={`${a.id}-${idx}`} value={a.id}>{a.name} ({a.currency})</option>
         ))}
       </datalist>
 
-      {/* Form selector */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-        {FORMS.map(f => (
-          <button
-            key={f.key}
-            onClick={() => { setActiveForm(f.key); setResult(null); }}
-            style={{
-              padding: '16px 14px', borderRadius: 'var(--r-lg)', border: `1.5px solid ${activeForm === f.key ? 'var(--brand)' : 'var(--border)'}`,
-              background: activeForm === f.key ? 'var(--brand-subtle)' : 'var(--glass-bg)',
-              cursor: 'pointer', fontFamily: 'var(--font)', textAlign: 'left',
-              transition: 'all 0.15s',
-            }}
-          >
-            <div style={{ fontSize: 24, marginBottom: 8 }}>{f.icon}</div>
-            <div style={{ fontWeight: 700, fontSize: 13, color: activeForm === f.key ? 'var(--brand-light)' : 'var(--text-0)', marginBottom: 4 }}>{f.label}</div>
-            <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{f.desc}</div>
-          </button>
-        ))}
+      {/* ── 4-DESK SELECTOR BAR ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+        {DESKS.map(d => {
+          const active = activeDesk === d.key;
+          return (
+            <button
+              key={d.key}
+              onClick={() => { setActiveDesk(d.key); setResult(null); }}
+              style={{
+                padding: '16px 18px',
+                borderRadius: 14,
+                textAlign: 'left',
+                cursor: 'pointer',
+                background: active ? 'rgba(16, 185, 129, 0.14)' : 'rgba(15, 23, 42, 0.75)',
+                border: `2px solid ${active ? '#10b981' : 'var(--border-subtle)'}`,
+                color: '#f8fafc',
+                transition: 'all 0.15s',
+              }}
+            >
+              <div style={{ fontSize: 22, marginBottom: 6 }}>{d.icon}</div>
+              <div style={{ fontWeight: 800, fontSize: 14, color: active ? '#34d399' : '#f8fafc' }}>{d.title}</div>
+              <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>{d.sub}</div>
+            </button>
+          );
+        })}
       </div>
 
-      {/* Form panel */}
-      <div className="card">
-        <h3 style={{ marginBottom: 20 }}>{FORMS.find(f => f.key === activeForm)?.label}</h3>
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-
-          {/* ── Card Form ── */}
-          {activeForm === 'card' && (<>
-            <div className="field">
-              <label className="field-label">Cardholder Name <span style={{ color: 'var(--rose)' }}>*</span></label>
-              <input style={inp} type="text" placeholder="Jane Smith" value={cardName} onChange={e => setCardName(e.target.value)} required />
+      {/* ── DESK 1: INSTANT INTERBANK SWITCH TRANSFER (pacs.008 + pacs.002) ── */}
+      {activeDesk === 'switch_intent' && (
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <span className="badge badge-success" style={{ marginBottom: 6 }}>REAL-TIME GROSS SETTLEMENT</span>
+              <h3 className="card-title">⚡ Instant Interbank Switch Transfer (pacs.008)</h3>
+              <p className="card-subtitle">
+                Creates and confirms an interbank payment intent in one atomic flow, returning signed <code style={{ color: '#34d399' }}>pacs.008</code> and <code style={{ color: '#34d399' }}>pacs.002</code> XML payloads.
+              </p>
             </div>
-            <div className="grid-2">
-              <div className="field">
-                <label className="field-label">Credit Limit (cents)</label>
-                <input style={inp} type="number" value={cardLimit} onChange={e => setCardLimit(e.target.value)} />
-                <span className="field-hint">500000 = $5,000.00</span>
+          </div>
+
+          <form onSubmit={handleSwitchTransfer} style={{ maxWidth: 680 }}>
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">Settlement Amount (USD) *</label>
+                <input
+                  className="form-input mono"
+                  type="number"
+                  step="0.01"
+                  min="0.50"
+                  value={intAmountUsd}
+                  onChange={e => setIntAmountUsd(e.target.value)}
+                  required
+                />
               </div>
-              <div className="field">
-                <label className="field-label">Currency</label>
-                <select style={{ ...inp, cursor: 'pointer' }} value={cardCurrency} onChange={e => setCardCurrency(e.target.value)}>
-                  {['USD','EUR','GBP','NGN','ZAR'].map(c => <option key={c}>{c}</option>)}
+              <div className="form-group">
+                <label className="form-label">Currency</label>
+                <select className="form-select" value={intCurrency} onChange={e => setIntCurrency(e.target.value)}>
+                  {['USD', 'EUR', 'GBP', 'NGN', 'ZAR'].map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
               </div>
             </div>
-          </>)}
 
-          {/* ── ACH / Wire Form ── */}
-          {activeForm === 'ach' && (<>
-            <div className="field">
-              <label className="field-label">Transfer Type</label>
-              <select style={{ ...inp, cursor: 'pointer' }} value={achType} onChange={e => setAchType(e.target.value as any)}>
-                <option value="ach_credit">ACH Credit (push)</option>
-                <option value="ach_debit">ACH Debit (pull)</option>
-                <option value="wire">Wire Transfer</option>
+            <div className="form-group">
+              <label className="form-label">Destination Clearing / Partner Account ID *</label>
+              <input
+                list="member-live-accounts"
+                className="form-input mono"
+                placeholder="Select or paste destination account UUID"
+                value={intDest}
+                onChange={e => setIntDest(e.target.value)}
+                required
+              />
+            </div>
+
+            <button type="submit" className="btn btn-success btn-lg" disabled={loading}>
+              {loading ? 'Authorizing & Settling on Switch…' : `⚡ Execute $${intAmountUsd} Switch Transfer →`}
+            </button>
+          </form>
+        </div>
+      )}
+
+      {/* ── DESK 2: ACH & WIRE ORIGINATION ── */}
+      {activeDesk === 'ach_wire' && (
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h3 className="card-title">🏦 ACH &amp; Fedwire Origination Desk</h3>
+              <p className="card-subtitle">Originate same-day ACH credits, debits, or high-value Fedwire transfers.</p>
+            </div>
+          </div>
+
+          <form onSubmit={handleAchWire} style={{ maxWidth: 680 }}>
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">Rail Type</label>
+                <select className="form-select" value={achType} onChange={e => setAchType(e.target.value as any)}>
+                  <option value="ach_credit">ACH Credit (Push Funds)</option>
+                  <option value="ach_debit">ACH Debit (Pull Funds)</option>
+                  <option value="wire">High-Value Fedwire Transfer</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Amount (USD) *</label>
+                <input
+                  className="form-input mono"
+                  type="number"
+                  step="0.01"
+                  value={achAmountUsd}
+                  onChange={e => setAchAmountUsd(e.target.value)}
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">Originating Account ID *</label>
+                <input
+                  list="member-live-accounts"
+                  className="form-input mono"
+                  value={achFrom}
+                  onChange={e => setAchFrom(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Beneficiary Account ID *</label>
+                <input
+                  list="member-live-accounts"
+                  className="form-input mono"
+                  value={achTo}
+                  onChange={e => setAchTo(e.target.value)}
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Remittance Description</label>
+              <input
+                className="form-input"
+                value={achDesc}
+                onChange={e => setAchDesc(e.target.value)}
+              />
+            </div>
+
+            <button type="submit" className="btn btn-primary btn-lg" disabled={loading}>
+              {loading ? 'Originating Transfer…' : '🏦 Submit ACH / Wire Instruction →'}
+            </button>
+          </form>
+        </div>
+      )}
+
+      {/* ── DESK 3: VIRTUAL & PHYSICAL CARD ISSUING & LIFECYCLE VAULT ── */}
+      {activeDesk === 'card_vault' && (
+        <div className="grid-2" style={{ alignItems: 'start' }}>
+          {/* Issue New Card + Simulate Purchase */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+            <div className="card">
+              <h3 className="card-title" style={{ marginBottom: 6 }}>💳 Issue New Virtual / Physical Card</h3>
+              <p className="card-subtitle" style={{ marginBottom: 16 }}>
+                Generates a Luhn-valid PAN, CVV, and expiration date backed by your institution’s clearing shard.
+              </p>
+              <form onSubmit={handleIssueCard}>
+                <div className="form-group">
+                  <label className="form-label">Cardholder Full Name *</label>
+                  <input
+                    className="form-input"
+                    placeholder="e.g. Chidi Nwosu"
+                    value={cardName}
+                    onChange={e => setCardName(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label className="form-label">Spending Limit (USD)</label>
+                    <input
+                      className="form-input mono"
+                      type="number"
+                      value={cardLimitUsd}
+                      onChange={e => setCardLimitUsd(e.target.value)}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Card Form Factor</label>
+                    <select className="form-select" value={cardType} onChange={e => setCardType(e.target.value as any)}>
+                      <option value="virtual">Virtual Instant Card</option>
+                      <option value="physical">Physical EMV Card</option>
+                    </select>
+                  </div>
+                </div>
+                <button type="submit" className="btn btn-success" disabled={loading}>
+                  {loading ? 'Issuing Card…' : '💳 Issue Card Instantly'}
+                </button>
+              </form>
+            </div>
+
+            {/* Merchant Authorization Simulator */}
+            <div className="card">
+              <h3 className="card-title" style={{ marginBottom: 6 }}>🛍️ Simulate Live Merchant Card Purchase</h3>
+              <p className="card-subtitle" style={{ marginBottom: 16 }}>
+                Test real-time card limit checking and double-entry ledger settlement on any active card.
+              </p>
+              <form onSubmit={handleAuthorizeCardPurchase}>
+                <div className="form-group">
+                  <label className="form-label">Select Issued Card</label>
+                  <select className="form-select mono" value={authCardId} onChange={e => setAuthCardId(e.target.value)}>
+                    {issuedCards.map((c: any) => (
+                      <option key={c.id} value={c.id}>
+                        {c.cardholder_name} — •••• {c.last4} ({c.status})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label className="form-label">Merchant Name</label>
+                    <input className="form-input" value={authMerchant} onChange={e => setAuthMerchant(e.target.value)} />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Purchase Amount (USD)</label>
+                    <input className="form-input mono" type="number" step="0.01" value={authAmountUsd} onChange={e => setAuthAmountUsd(e.target.value)} />
+                  </div>
+                </div>
+                <button type="submit" className="btn btn-primary" disabled={loading || !authCardId}>
+                  🛍️ Authorize Purchase
+                </button>
+              </form>
+            </div>
+          </div>
+
+          {/* Issued Cards Vault */}
+          <div className="card">
+            <div className="card-header">
+              <h3 className="card-title">🗂️ Issued Cards Vault ({issuedCards.length})</h3>
+              <button className="btn btn-secondary btn-sm" onClick={loadWorkspaceData}>🔄 Refresh</button>
+            </div>
+
+            {issuedCards.length === 0 ? (
+              <div className="empty-state">
+                <div className="empty-state-icon">💳</div>
+                <div>No cards issued yet. Issue your first virtual card on the left.</div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {issuedCards.map((c: any) => (
+                  <div
+                    key={c.id}
+                    style={{
+                      padding: '16px',
+                      borderRadius: 12,
+                      background: 'linear-gradient(135deg, rgba(15, 23, 42, 0.9), rgba(3, 7, 18, 0.95))',
+                      border: '1px solid var(--border-medium)',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                      <span style={{ fontWeight: 800, fontSize: 14 }}>{c.cardholder_name}</span>
+                      <span className={`badge ${c.status === 'active' ? 'badge-success' : c.status === 'frozen' ? 'badge-warning' : 'badge-danger'}`}>
+                        {c.status}
+                      </span>
+                    </div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 15, letterSpacing: '0.12em', color: '#a5b4fc', marginBottom: 8 }}>
+                      •••• •••• •••• {c.last4} <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>EXP {c.exp_month}/{c.exp_year}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, color: 'var(--text-secondary)' }}>
+                      <span>Spent: <strong>{fmtUsd(Number(c.spent_cents || 0))}</strong> / {fmtUsd(Number(c.spending_limit_cents || 500000))}</span>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        {c.status === 'active' && (
+                          <button className="btn btn-secondary btn-sm" onClick={() => handleCardStatus(c.id, 'frozen')}>❄️ Freeze</button>
+                        )}
+                        {c.status === 'frozen' && (
+                          <button className="btn btn-success btn-sm" onClick={() => handleCardStatus(c.id, 'active')}>🔥 Unfreeze</button>
+                        )}
+                        {c.status !== 'cancelled' && (
+                          <button className="btn btn-danger btn-sm" onClick={() => handleCardStatus(c.id, 'cancelled')}>Cancel</button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── DESK 4: PAYMENT RETURNS (pacs.004) & ISO 20022 camt.053 STATEMENTS ── */}
+      {activeDesk === 'returns_camt' && (
+        <div className="grid-2" style={{ alignItems: 'start' }}>
+          {/* Left: Payment Intents & 1-Click pacs.004 Reversal */}
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <h3 className="card-title">↩️ Payment Returns &amp; Reversals (ISO 20022 pacs.004)</h3>
+                <p className="card-subtitle">Post atomic contra-entry reversals for settled switch transfers.</p>
+              </div>
+              <select
+                className="form-select"
+                style={{ width: 150 }}
+                value={reverseReason}
+                onChange={e => setReverseReason(e.target.value)}
+              >
+                <option value="CUST">CUST (Customer)</option>
+                <option value="DUPL">DUPL (Duplicate)</option>
+                <option value="FRAD">FRAD (Fraud)</option>
+                <option value="TECH">TECH (Technical)</option>
               </select>
             </div>
-            <div className="grid-2">
-              <div className="field">
-                <label className="field-label">From Account ID <span style={{ color: 'var(--rose)' }}>*</span></label>
-                <input list="member-live-accounts" style={{ ...inp, fontFamily: 'var(--font-mono)' }} placeholder="Select or enter source account ID" value={achFrom} onChange={e => setAchFrom(e.target.value)} required />
-              </div>
-              <div className="field">
-                <label className="field-label">To Account ID <span style={{ color: 'var(--rose)' }}>*</span></label>
-                <input list="member-live-accounts" style={{ ...inp, fontFamily: 'var(--font-mono)' }} placeholder="Select or enter destination account ID" value={achTo} onChange={e => setAchTo(e.target.value)} required />
-              </div>
-            </div>
-            <div className="grid-2">
-              <div className="field">
-                <label className="field-label">Amount (USD) <span style={{ color: 'var(--rose)' }}>*</span></label>
-                <input style={inp} type="number" step="0.01" value={achAmount} onChange={e => setAchAmount(e.target.value)} required />
-              </div>
-              <div className="field">
-                <label className="field-label">Description</label>
-                <input style={inp} type="text" placeholder="Invoice #12345" value={achDesc} onChange={e => setAchDesc(e.target.value)} />
-              </div>
-            </div>
-          </>)}
 
-          {/* ── Payment Intent Form ── */}
-          {activeForm === 'intent' && (<>
-            <div className="grid-2">
-              <div className="field">
-                <label className="field-label">Amount (cents) <span style={{ color: 'var(--rose)' }}>*</span></label>
-                <input style={inp} type="number" value={intAmount} onChange={e => setIntAmount(e.target.value)} required />
-                <span className="field-hint">5000 = $50.00</span>
+            {paymentIntents.length === 0 ? (
+              <div className="empty-state">No payment intents recorded yet.</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 420, overflowY: 'auto' }}>
+                {paymentIntents.slice(0, 15).map((pi: any) => (
+                  <div
+                    key={pi.id}
+                    style={{
+                      padding: '12px 14px',
+                      borderRadius: 10,
+                      background: 'rgba(255,255,255,0.02)',
+                      border: '1px solid var(--border-subtle)',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      gap: 12,
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 13.5 }}>
+                        {fmtUsd(Number(pi.amount || 0))} <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>({pi.id.slice(0, 14)}…)</span>
+                      </div>
+                      <div style={{ fontSize: 11.5, color: 'var(--text-secondary)' }}>
+                        Status: <strong>{pi.status}</strong> · {new Date(pi.created_at).toLocaleString()}
+                      </div>
+                    </div>
+                    {pi.status === 'succeeded' && (
+                      <button
+                        className="btn btn-danger btn-sm"
+                        onClick={() => handleReverseIntent(pi.id)}
+                        disabled={loading}
+                      >
+                        ↩️ Reverse (pacs.004)
+                      </button>
+                    )}
+                  </div>
+                ))}
               </div>
-              <div className="field">
-                <label className="field-label">Currency</label>
-                <select style={{ ...inp, cursor: 'pointer' }} value={intCurrency} onChange={e => setIntCurrency(e.target.value)}>
-                  {['USD','EUR','GBP'].map(c => <option key={c}>{c}</option>)}
-                </select>
-              </div>
-            </div>
-            <div className="field">
-              <label className="field-label">Destination Account ID</label>
-              <input list="member-live-accounts" style={{ ...inp, fontFamily: 'var(--font-mono)' }} placeholder="Select or enter destination account ID" value={intDest} onChange={e => setIntDest(e.target.value)} />
-            </div>
-          </>)}
+            )}
+          </div>
 
-          <button type="submit" className="btn btn-primary" style={{ alignSelf: 'flex-start', minWidth: 180 }} disabled={loading}>
-            {loading ? <><span className="btn-spinner" /> Processing…</> : `Submit ${FORMS.find(f => f.key === activeForm)?.label}`}
-          </button>
-        </form>
+          {/* Right: ISO 20022 camt.053 Statement Generator */}
+          <div className="card">
+            <h3 className="card-title" style={{ marginBottom: 6 }}>📜 Export ISO 20022 camt.053.001.08 Statement</h3>
+            <p className="card-subtitle" style={{ marginBottom: 16 }}>
+              Generate an official XML Bank-to-Customer Account Statement for end-of-day treasury reconciliation.
+            </p>
+            <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
+              <select
+                className="form-select mono"
+                value={camtAccountId}
+                onChange={e => setCamtAccountId(e.target.value)}
+              >
+                {liveAccounts.map((a: any) => (
+                  <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>
+                ))}
+              </select>
+              <button type="button" className="btn btn-primary" onClick={handleExportCamt053}>
+                📥 Generate XML
+              </button>
+            </div>
+            {camtXml && (
+              <pre className="code-block" style={{ maxHeight: 320, overflowY: 'auto', fontSize: 11.5 }}>
+                {camtXml}
+              </pre>
+            )}
+          </div>
+        </div>
+      )}
 
-        {result && <ResultPanel result={result} onClear={() => setResult(null)} />}
-      </div>
+      {/* ── LIVE RESPONSE & ISO 20022 XML INSPECTOR ── */}
+      {result && (
+        <div className="card" style={{ border: `1px solid ${result.ok ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'}` }}>
+          <div className="card-header">
+            <span style={{ fontWeight: 800, color: result.ok ? '#34d399' : '#f87171' }}>
+              {result.ok ? '✅ Switch Execution Succeeded' : '❌ Switch Execution Error'}
+            </span>
+            <button className="btn btn-ghost btn-sm" onClick={() => setResult(null)}>Dismiss</button>
+          </div>
+          <pre className="code-block" style={{ margin: 0, maxHeight: 360, overflowY: 'auto' }}>
+            {JSON.stringify(result.data, null, 2)}
+          </pre>
+        </div>
+      )}
     </div>
   );
 }

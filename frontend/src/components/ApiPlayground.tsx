@@ -30,10 +30,10 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
   const [privateKeyPem, setPrivateKeyPem] = useState('');
 
   // Input States
-  const [intentAmount, setIntentAmount] = useState('2500'); // $25.00
+  const [intentAmount, setIntentAmount] = useState('25000'); // $250.00
   const [intentCurrency, setIntentCurrency] = useState('USD');
   const [destinationAccount, setDestinationAccount] = useState('');
-  
+
   const [confirmIntentId, setConfirmIntentId] = useState('');
   const [confirmFundingSource, setConfirmFundingSource] = useState('');
 
@@ -42,15 +42,15 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
   const [responseStatus, setResponseStatus] = useState<number | null>(null);
   const [responseBody, setResponseBody] = useState<any>(null);
   const [pacsXml, setPacsXml] = useState<string | null>(null);
+  const [pacs002Xml, setPacs002Xml] = useState<string | null>(null);
+  const [pacs004Xml, setPacs004Xml] = useState<string | null>(null);
   const [routingLogs, setRoutingLogs] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [signingError, setSigningError] = useState<string | null>(null);
 
-  // Sync user tenant on load
   useEffect(() => {
     if (user?.tenant_id) {
       setB2bTenantId(user.tenant_id);
-      setAuthMode('b2b');
     }
   }, [user]);
 
@@ -83,6 +83,8 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
     setResponseStatus(null);
     setResponseBody(null);
     setPacsXml(null);
+    setPacs002Xml(null);
+    setPacs004Xml(null);
     setRoutingLogs([]);
 
     const body = {
@@ -92,20 +94,14 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
       metadata: { source: 'api_playground', initiated_by: user?.username || 'operator' },
     };
 
+    const effectiveKey = apiKey || localStorage.getItem('payrail_gateway_key') || '';
     const headers: any = {
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${effectiveKey}`,
     };
 
-    const effectiveKey = apiKey || localStorage.getItem('payrail_gateway_key') || '';
-    if (authMode === 'bearer') {
-      headers['Authorization'] = `Bearer ${effectiveKey}`;
-      const curl = `curl -X POST ${API_BASE_URL}/v1/payment_intents \\\n  -H "Authorization: Bearer ${effectiveKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(body, null, 2)}'`;
-      setCurlCommand(curl);
-    } else {
-      headers['Authorization'] = `Bearer ${effectiveKey}`;
-      const curl = `curl -X POST ${API_BASE_URL}/v1/payment_intents \\\n  -H "Authorization: Bearer ${effectiveKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(body, null, 2)}'`;
-      setCurlCommand(curl);
-    }
+    const curl = `curl -X POST ${API_BASE_URL}/v1/payment_intents \\\n  -H "Authorization: Bearer ${effectiveKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(body, null, 2)}'`;
+    setCurlCommand(curl);
 
     try {
       const res = await fetch(`${API_BASE_URL}/v1/payment_intents`, {
@@ -137,6 +133,8 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
     setResponseStatus(null);
     setResponseBody(null);
     setPacsXml(null);
+    setPacs002Xml(null);
+    setPacs004Xml(null);
     setRoutingLogs([]);
     setSigningError(null);
 
@@ -145,15 +143,14 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
       payload.funding_source_id = confirmFundingSource;
     }
 
+    const effectiveKey = apiKey || localStorage.getItem('payrail_gateway_key') || '';
     const headers: any = {
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
     };
 
-    let curl = '';
-
     if (authMode === 'bearer') {
-      headers['Authorization'] = `Bearer ${apiKey}`;
-      curl = `curl -X POST ${API_BASE_URL}/v1/payment_intents/${confirmIntentId}/confirm \\\n  -H "Authorization: Bearer ${apiKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(payload, null, 2)}'`;
+      headers['Authorization'] = `Bearer ${effectiveKey}`;
+      const curl = `curl -X POST ${API_BASE_URL}/v1/payment_intents/${confirmIntentId}/confirm \\\n  -H "Authorization: Bearer ${effectiveKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(payload, null, 2)}'`;
       setCurlCommand(curl);
 
       try {
@@ -168,7 +165,8 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
         setResponseBody(data);
 
         if (data.routing_logs) setRoutingLogs(data.routing_logs);
-        if (data.pacs_msg) setPacsXml(data.pacs_msg);
+        if (data.pacs_008_xml || data.pacs_msg) setPacsXml(data.pacs_008_xml || data.pacs_msg);
+        if (data.pacs_002_xml) setPacs002Xml(data.pacs_002_xml);
         onApiExecuted();
       } catch (err: any) {
         setResponseBody({ error: err.message || 'API call failed' });
@@ -176,7 +174,6 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
         setLoading(false);
       }
     } else {
-      // B2B Asymmetric Cryptography Signed Confirm Flow
       if (!privateKeyPem) {
         setSigningError('You must provide your Secp256k1 Private Key PEM to sign B2B request.');
         setLoading(false);
@@ -184,13 +181,12 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
       }
 
       try {
-        // 1. Request signature from signing helper
         const signRes = await fetch(`${API_BASE_URL}/v1/auth/sign_payload`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ privateKeyPem, payload })
+          body: JSON.stringify({ privateKeyPem, payload }),
         });
-        
+
         if (!signRes.ok) {
           const signErrData = await signRes.json();
           throw new Error(signErrData.error || 'Failed to sign confirm request payload.');
@@ -201,10 +197,9 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
         headers['Payrail-Tenant-Id'] = b2bTenantId;
         headers['Payrail-Signature'] = `t=${timestamp},v1=${signature}`;
 
-        curl = `curl -X POST ${API_BASE_URL}/v1/payment_intents/${confirmIntentId}/confirm \\\n  -H "Payrail-Tenant-Id: ${b2bTenantId}" \\\n  -H "Payrail-Signature: t=${timestamp},v1=${signature}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(payload, null, 2)}'`;
+        const curl = `curl -X POST ${API_BASE_URL}/v1/payment_intents/${confirmIntentId}/confirm \\\n  -H "Payrail-Tenant-Id: ${b2bTenantId}" \\\n  -H "Payrail-Signature: t=${timestamp},v1=${signature}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(payload, null, 2)}'`;
         setCurlCommand(curl);
 
-        // 2. Perform Confirm
         const res = await fetch(`${API_BASE_URL}/v1/payment_intents/${confirmIntentId}/confirm`, {
           method: 'POST',
           headers,
@@ -216,7 +211,8 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
         setResponseBody(data);
 
         if (data.routing_logs) setRoutingLogs(data.routing_logs);
-        if (data.pacs_msg) setPacsXml(data.pacs_msg);
+        if (data.pacs_008_xml || data.pacs_msg) setPacsXml(data.pacs_008_xml || data.pacs_msg);
+        if (data.pacs_002_xml) setPacs002Xml(data.pacs_002_xml);
         onApiExecuted();
       } catch (err: any) {
         setResponseBody({ error: err.message || 'B2B API Confirm failed' });
@@ -226,18 +222,45 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
     }
   };
 
+  const handleReverseIntent = async () => {
+    if (!confirmIntentId) return;
+    setLoading(true);
+    setPacs004Xml(null);
+    const effectiveKey = apiKey || localStorage.getItem('payrail_gateway_key') || '';
+    try {
+      const res = await fetch(`${API_BASE_URL}/v1/payment_intents/${confirmIntentId}/reverse`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${effectiveKey}`,
+        },
+        body: JSON.stringify({
+          reason_code: 'CUST',
+          reason_description: 'ISO 20022 pacs.004 Sovereign Switch Return',
+        }),
+      });
+      setResponseStatus(res.status);
+      const data = await res.json();
+      setResponseBody(data);
+      if (data.pacs_004_xml) setPacs004Xml(data.pacs_004_xml);
+      onApiExecuted();
+    } catch (err: any) {
+      setResponseBody({ error: err.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="grid-main-aside" style={{ gridTemplateColumns: '1.2fr 1fr' }}>
-      
       {/* Left panel: Forms for API calls */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-        
         {/* Auth Config */}
         <div className="glass-panel">
           <h3 style={{ fontSize: '15px', fontWeight: 600, marginBottom: '16px' }}>Gateway Authorization Mode</h3>
-          
+
           <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
-            <button 
+            <button
               className={`btn ${authMode === 'bearer' ? 'btn-nav-primary' : 'btn-nav-secondary'}`}
               type="button"
               style={{ flex: 1, padding: '8px 12px', fontSize: '12px' }}
@@ -245,7 +268,7 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
             >
               Bearer API Token
             </button>
-            <button 
+            <button
               className={`btn ${authMode === 'b2b' ? 'btn-nav-primary' : 'btn-nav-secondary'}`}
               type="button"
               style={{ flex: 1, padding: '8px 12px', fontSize: '12px' }}
@@ -258,35 +281,35 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
           {authMode === 'bearer' ? (
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label className="form-label">Private Bearer Secret Key</label>
-              <input 
-                type="text" 
-                className="form-input" 
+              <input
+                type="text"
+                className="form-input"
                 style={{ fontFamily: 'var(--font-mono)' }}
-                value={apiKey} 
-                onChange={e => setApiKey(e.target.value)} 
+                value={apiKey}
+                onChange={e => setApiKey(e.target.value)}
               />
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label">Tenant ID (BIC Shard Boundary)</label>
-                <input 
-                  type="text" 
-                  className="form-input" 
+                <input
+                  type="text"
+                  className="form-input"
                   style={{ fontFamily: 'var(--font-mono)' }}
                   placeholder="e.g. 019f94e4-30d0-..."
-                  value={b2bTenantId} 
-                  onChange={e => setB2bTenantId(e.target.value)} 
+                  value={b2bTenantId}
+                  onChange={e => setB2bTenantId(e.target.value)}
                 />
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label">Private Key PEM (Required to calculate ECDSA signatures)</label>
-                <textarea 
-                  className="form-input" 
+                <textarea
+                  className="form-input"
                   style={{ fontFamily: 'var(--font-mono)', height: '100px', fontSize: '11px', resize: 'none' }}
-                  placeholder="-----BEGIN PRIVATE KEY-----\nMGECAQEGCSqGSIb3DQEHATAoBggqhkjOPQMEAjAXBgcqhkjOPQIBBggqhkjOPQMBQwUGAyt0AAYE..."
-                  value={privateKeyPem} 
-                  onChange={e => setPrivateKeyPem(e.target.value)} 
+                  placeholder="-----BEGIN PRIVATE KEY-----"
+                  value={privateKeyPem}
+                  onChange={e => setPrivateKeyPem(e.target.value)}
                 />
               </div>
               {signingError && <div className="text-red" style={{ fontSize: '12px' }}>⚠️ {signingError}</div>}
@@ -296,7 +319,7 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
 
         {/* Create Payment Intent */}
         <div className="glass-panel">
-          <h3 style={{ fontSize: '15px', fontWeight: 600, marginBottom: '16px' }}>Endpoint: Create Payment Intent</h3>
+          <h3 style={{ fontSize: '15px', fontWeight: 600, marginBottom: '16px' }}>1. Create Payment Intent (POST /v1/payment_intents)</h3>
           <form onSubmit={handleCreateIntent} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             <div className="grid-3">
               <div className="form-group" style={{ marginBottom: 0 }}>
@@ -320,52 +343,61 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
                 </select>
               </div>
             </div>
-            <button type="submit" className="button" disabled={loading}>
+            <button type="submit" className="btn btn-primary" disabled={loading}>
               Create Payment Intent
             </button>
           </form>
         </div>
 
-        {/* Confirm Payment Intent */}
+        {/* Confirm or Reverse Payment Intent */}
         <div className="glass-panel">
-          <h3 style={{ fontSize: '15px', fontWeight: 600, marginBottom: '16px' }}>Endpoint: Confirm & Execute Transfer</h3>
+          <h3 style={{ fontSize: '15px', fontWeight: 600, marginBottom: '16px' }}>2. Confirm & Switch Transfer (pacs.008 / pacs.002 / pacs.004)</h3>
           <form onSubmit={handleConfirmIntent} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             <div className="grid-2">
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label">Payment Intent ID</label>
-                <input 
-                  type="text" 
-                  className="form-input" 
+                <input
+                  type="text"
+                  className="form-input"
                   style={{ fontFamily: 'var(--font-mono)' }}
-                  placeholder="pi_..." 
-                  value={confirmIntentId} 
-                  onChange={e => setConfirmIntentId(e.target.value)} 
+                  placeholder="pi_..."
+                  value={confirmIntentId}
+                  onChange={e => setConfirmIntentId(e.target.value)}
                 />
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label">Force Funding Source (Optional)</label>
                 <select className="form-select" value={confirmFundingSource} onChange={e => setConfirmFundingSource(e.target.value)}>
-                  <option value="">Use Global Priority order (Failover Swap)</option>
+                  <option value="">Tenant-Scoped Priority Waterfall (Default)</option>
                   {fundingSources.map((fs, idx) => (
                     <option key={`${fs.id}-${idx}`} value={fs.id}>{fs.name}</option>
                   ))}
                 </select>
               </div>
             </div>
-            <button type="submit" className="button" disabled={!confirmIntentId || loading}>
-              Confirm Payment Intent
-            </button>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button type="submit" className="btn btn-primary" style={{ flex: 2 }} disabled={!confirmIntentId || loading}>
+                ⚡ Confirm & Execute (pacs.008)
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                style={{ flex: 1 }}
+                disabled={!confirmIntentId || loading}
+                onClick={handleReverseIntent}
+              >
+                ↩️ Reverse (pacs.004)
+              </button>
+            </div>
           </form>
         </div>
-
       </div>
 
-      {/* Right panel: Live API logs, cURL, and responses */}
+      {/* Right panel: Live API logs, cURL, and ISO 20022 XML responses */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-        
         <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '16px', flexGrow: 1, minHeight: '550px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h3 style={{ fontSize: '15px', fontWeight: 600 }}>API Terminal Inspector</h3>
+            <h3 style={{ fontSize: '15px', fontWeight: 600 }}>Sovereign Switch & ISO 20022 Inspector</h3>
             {responseStatus && (
               <span className={`badge ${responseStatus >= 200 && responseStatus < 300 ? 'badge-success' : 'badge-danger'}`}>
                 HTTP {responseStatus}
@@ -373,7 +405,6 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
             )}
           </div>
 
-          {/* cURL Command Codeblock */}
           {curlCommand && (
             <div>
               <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>REQUEST CURL COMMAND:</div>
@@ -383,14 +414,13 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
             </div>
           )}
 
-          {/* Failover / Swapping logs */}
           {routingLogs.length > 0 && (
             <div>
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>GATEWAY ROUTING & SWAP LOGS:</div>
-              <div style={{ 
-                padding: '12px', 
-                borderRadius: '8px', 
-                background: 'rgba(245, 158, 11, 0.05)', 
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>SOVEREIGN SWITCH ROUTING & RTGS LOGS:</div>
+              <div style={{
+                padding: '12px',
+                borderRadius: '8px',
+                background: 'rgba(245, 158, 11, 0.05)',
                 border: '1px solid rgba(245, 158, 11, 0.1)',
                 display: 'flex',
                 flexDirection: 'column',
@@ -407,17 +437,39 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
             </div>
           )}
 
-          {/* ISO 20022 PACs XML payload */}
           {pacsXml && (
             <div>
-              <div style={{ fontSize: '11px', color: 'var(--secondary)', marginBottom: '4px', fontWeight: 600 }}>GENERATED ISO 20022 PACS.008 MESSAGE XML:</div>
-              <pre className="code-block" style={{ fontSize: '11px', whiteSpace: 'pre-wrap', maxHeight: '180px', overflowY: 'auto', border: '1px solid var(--secondary-glow)', color: 'var(--secondary)' }}>
+              <div style={{ fontSize: '11px', color: '#34d399', marginBottom: '4px', fontWeight: 700 }}>
+                ISO 20022 PACS.008.001.08 (FI-TO-FI CUSTOMER CREDIT TRANSFER):
+              </div>
+              <pre className="code-block" style={{ fontSize: '11px', whiteSpace: 'pre-wrap', maxHeight: '160px', overflowY: 'auto' }}>
                 {pacsXml}
               </pre>
             </div>
           )}
 
-          {/* HTTP JSON Response */}
+          {pacs002Xml && (
+            <div>
+              <div style={{ fontSize: '11px', color: '#818cf8', marginBottom: '4px', fontWeight: 700 }}>
+                ISO 20022 PACS.002.001.10 (PAYMENT STATUS REPORT — ACSC / RJCT):
+              </div>
+              <pre className="code-block" style={{ fontSize: '11px', whiteSpace: 'pre-wrap', maxHeight: '150px', overflowY: 'auto' }}>
+                {pacs002Xml}
+              </pre>
+            </div>
+          )}
+
+          {pacs004Xml && (
+            <div>
+              <div style={{ fontSize: '11px', color: '#fbbf24', marginBottom: '4px', fontWeight: 700 }}>
+                ISO 20022 PACS.004.001.09 (PAYMENT RETURN / REVERSAL):
+              </div>
+              <pre className="code-block" style={{ fontSize: '11px', whiteSpace: 'pre-wrap', maxHeight: '160px', overflowY: 'auto' }}>
+                {pacs004Xml}
+              </pre>
+            </div>
+          )}
+
           <div style={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
             <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>RESPONSE PAYLOAD JSON:</div>
             <pre className="code-block" style={{ flexGrow: 1, overflowY: 'auto', fontSize: '12px' }}>
@@ -425,9 +477,7 @@ export default function ApiPlayground({ refreshTrigger, onApiExecuted, user }: A
             </pre>
           </div>
         </div>
-
       </div>
-
     </div>
   );
 }

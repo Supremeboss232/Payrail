@@ -1,32 +1,25 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { API_BASE_URL } from '../../App';
 import MemberHomeTab from './MemberHomeTab';
 import MemberServicesTab from './MemberServicesTab';
 import MemberPaymentsTab from './MemberPaymentsTab';
 import MemberTransactionsTab from './MemberTransactionsTab';
 import MemberKeysTab from './MemberKeysTab';
 
-type MemberTab = 'home' | 'services' | 'payments' | 'transactions' | 'keys';
+export type MemberTab = 'home' | 'payments' | 'services' | 'transactions' | 'keys';
 
 interface MemberLayoutProps {
   user: any;
   onLogout: () => void;
 }
 
-const NAV: { key: MemberTab; icon: string; label: string }[] = [
-  { key: 'home',         icon: '🏠', label: 'Overview'        },
-  { key: 'services',     icon: '🔌', label: 'My Services'     },
-  { key: 'payments',     icon: '💳', label: 'Cards & Pay'     },
-  { key: 'transactions', icon: '📖', label: 'Transactions'    },
-  { key: 'keys',         icon: '🔑', label: 'API & Webhooks'  },
+const NAV: { key: MemberTab; icon: string; label: string; badge?: string }[] = [
+  { key: 'home',         icon: '🏛️', label: 'Treasury & RTGS Switch Setup' },
+  { key: 'payments',     icon: '💸', label: 'Switch Transfers, Cards & Reversals', badge: '4 Desks' },
+  { key: 'services',     icon: '🧩', label: 'Interactive BaaS Consoles', badge: 'Live FX / OFAC / OTP' },
+  { key: 'transactions', icon: '📖', label: 'Double-Entry Ledger & Audit' },
+  { key: 'keys',         icon: '🔐', label: 'Gateway Keys & Webhooks' },
 ];
-
-const TITLES: Record<MemberTab, string> = {
-  home:         'Partner Overview',
-  services:     'Available BaaS Services',
-  payments:     'Cards & Payments',
-  transactions: 'Transaction History',
-  keys:         'API Keys & Webhooks',
-};
 
 export default function MemberLayout({ user, onLogout }: MemberLayoutProps) {
   const [activeTab, setActiveTab] = useState<MemberTab>('home');
@@ -34,6 +27,9 @@ export default function MemberLayout({ user, onLogout }: MemberLayoutProps) {
   const [gatewayKey, setGatewayKey] = useState<string>(
     user?.gatewayKey || localStorage.getItem('payrail_gateway_key') || ''
   );
+  const [clearingBalance, setClearingBalance] = useState<number>(0);
+  const [settlementMode, setSettlementMode] = useState<string>('rtgs_webhook');
+
   const refresh = () => setRefreshTrigger(t => t + 1);
 
   const handleKeyGenerated = (newKey: string) => {
@@ -42,79 +38,186 @@ export default function MemberLayout({ user, onLogout }: MemberLayoutProps) {
     refresh();
   };
 
+  const bic = user?.routingCode || user?.routing_code || 'PARTNER_BIC';
+  const legalName = user?.legalName || user?.legal_name || 'Partner Financial Institution';
+
+  useEffect(() => {
+    Promise.all([
+      fetch(`${API_BASE_URL}/console/accounts`),
+      fetch(`${API_BASE_URL}/console/banks`),
+    ]).then(async ([accRes, bankRes]) => {
+      if (accRes.ok) {
+        const accs = await accRes.json();
+        if (Array.isArray(accs)) {
+          setClearingBalance(accs.reduce((sum: number, a: any) => sum + Number(a.balance || 0), 0));
+        }
+      }
+      if (bankRes.ok) {
+        const banks = await bankRes.json();
+        if (Array.isArray(banks)) {
+          const myBank = banks.find((b: any) => b.routing_code === bic || b.id === user?.tenantId);
+          if (myBank?.settlement_mode) {
+            setSettlementMode(myBank.settlement_mode);
+          }
+        }
+      }
+    }).catch(() => {});
+  }, [refreshTrigger, bic, user?.tenantId]);
+
+  const fmtUsd = (cents: number) =>
+    new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(cents / 100);
+
   return (
-    <div className="app-layout">
-
-      {/* ─── Sidebar ─── */}
-      <aside className="sidebar">
-        {/* Logo */}
-        <div className="sidebar-logo">
-          <div className="sidebar-logo-icon">⚡</div>
-          <div className="sidebar-logo-text">
-            <h2>Payrail</h2>
-            <span>Partner Portal</span>
-          </div>
-        </div>
-
-        {/* Identity badge */}
-        <div style={{ margin: '12px 10px 4px', padding: '12px 14px', borderRadius: 10, background: 'rgba(99, 102, 241, 0.08)', border: '1px solid rgba(99, 102, 241, 0.22)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-            <span className="status-dot online" />
-            <span style={{ fontSize: 10, fontWeight: 800, color: '#34d399', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Active Member</span>
-          </div>
-          <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--text-primary)', lineHeight: 1.3 }}>
-            {user?.legalName || user?.legal_name || 'Partner Bank'}
-          </div>
-          {(user?.routingCode || user?.routing_code) && (
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: '#818cf8', marginTop: 3 }}>
-              BIC: {user?.routingCode || user?.routing_code}
+    <div className="member-os-root">
+      {/* ── DISTINCT EXECUTIVE COMMERCIAL BANK TOPBAR ── */}
+      <header className="member-os-header">
+        <div className="member-os-topbar">
+          {/* Left: Bank Identity & BIC */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+            <div style={{
+              width: 40,
+              height: 40,
+              borderRadius: 11,
+              background: 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: 20,
+              boxShadow: '0 4px 18px rgba(16, 185, 129, 0.35)',
+            }}>
+              🏦
             </div>
-          )}
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontWeight: 900, fontSize: 16.5, color: '#f8fafc', letterSpacing: '-0.02em' }}>
+                  {legalName}
+                </span>
+                <span style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 11,
+                  fontWeight: 800,
+                  padding: '2px 9px',
+                  borderRadius: 99,
+                  background: 'rgba(16, 185, 129, 0.14)',
+                  color: '#34d399',
+                  border: '1px solid rgba(16, 185, 129, 0.32)',
+                }}>
+                  BIC: {bic}
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
+                Payrail Executive Treasury &amp; BaaS Workstation · Isolated Member Shard
+              </div>
+            </div>
+          </div>
+
+          {/* Right: Live Settlement Mode Badge, Reserve Position & Controls */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+            {/* Live Settlement Mode Pill */}
+            <div
+              onClick={() => setActiveTab('home')}
+              style={{
+                cursor: 'pointer',
+                padding: '6px 12px',
+                borderRadius: 10,
+                background: settlementMode === 'rtgs_webhook' ? 'rgba(16, 185, 129, 0.12)' : 'rgba(99, 102, 241, 0.12)',
+                border: `1px solid ${settlementMode === 'rtgs_webhook' ? 'rgba(16, 185, 129, 0.35)' : 'rgba(99, 102, 241, 0.35)'}`,
+                display: 'flex',
+                flexDirection: 'column',
+              }}
+              title="Click to configure Settlement Mode"
+            >
+              <span style={{ fontSize: 9.5, fontWeight: 800, textTransform: 'uppercase', color: 'var(--text-muted)' }}>
+                Switch Settlement Mode
+              </span>
+              <span style={{ fontSize: 12, fontWeight: 800, color: settlementMode === 'rtgs_webhook' ? '#34d399' : '#818cf8' }}>
+                {settlementMode === 'rtgs_webhook' ? '⚡ Direct Host RTGS (Zero Pre-Fund)' : '🏦 Pre-Funded Reserve Pool'}
+              </span>
+            </div>
+
+            {/* Live Switch Reserve Balance */}
+            <div style={{
+              padding: '6px 14px',
+              borderRadius: 10,
+              background: 'rgba(255, 255, 255, 0.03)',
+              border: '1px solid var(--border-subtle)',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'flex-end',
+            }}>
+              <span style={{ fontSize: 9.5, fontWeight: 800, textTransform: 'uppercase', color: 'var(--text-muted)' }}>
+                Switch Clearing Position
+              </span>
+              <span style={{
+                fontSize: 13.5,
+                fontWeight: 800,
+                fontFamily: 'var(--font-mono)',
+                color: clearingBalance >= 0 ? '#34d399' : '#fbbf24',
+              }}>
+                {fmtUsd(clearingBalance)}
+              </span>
+            </div>
+
+            <button className="btn btn-secondary btn-sm" onClick={refresh}>
+              🔄 Sync Shard
+            </button>
+            <button className="btn btn-secondary btn-sm" onClick={onLogout}>
+              🚪 Sign Out
+            </button>
+          </div>
         </div>
 
-        {/* Nav */}
-        <nav className="sidebar-nav">
-          <div className="sidebar-section-label">Institution Menu</div>
+        {/* ── HORIZONTAL WORKSPACE NAVIGATION STRIP ── */}
+        <nav className="member-os-navstrip">
           {NAV.map(item => (
             <button
               key={item.key}
-              className={`nav-item ${activeTab === item.key ? 'active' : ''}`}
+              className={`member-os-tab ${activeTab === item.key ? 'active' : ''}`}
               onClick={() => setActiveTab(item.key)}
             >
-              <span className="nav-icon">{item.icon}</span>
+              <span>{item.icon}</span>
               <span>{item.label}</span>
+              {item.badge && (
+                <span style={{
+                  marginLeft: 6,
+                  fontSize: 10,
+                  padding: '1px 7px',
+                  borderRadius: 99,
+                  background: activeTab === item.key ? 'rgba(16, 185, 129, 0.25)' : 'rgba(255,255,255,0.06)',
+                  color: activeTab === item.key ? '#6ee7b7' : '#94a3b8',
+                }}>
+                  {item.badge}
+                </span>
+              )}
             </button>
           ))}
         </nav>
+      </header>
 
-        {/* Footer */}
-        <div className="sidebar-footer">
-          <button className="btn btn-secondary btn-sm" onClick={onLogout} style={{ width: '100%' }}>
-            🚪 Sign Out
-          </button>
-        </div>
-      </aside>
-
-      {/* ─── Main area ─── */}
-      <div className="main-area">
-        <header className="topbar">
-          <div className="topbar-left">
-            <h1>{TITLES[activeTab]}</h1>
-            <p>Isolated Member Shard · {user?.legalName || user?.legal_name || 'Institution'}</p>
-          </div>
-          <div className="topbar-right">
-            <button className="btn btn-secondary btn-sm" onClick={refresh}>🔄 Refresh</button>
-          </div>
-        </header>
-
-        <div className="content-area">
-          {activeTab === 'home'         && <MemberHomeTab user={user} gatewayKey={gatewayKey} refreshTrigger={refreshTrigger} />}
-          {activeTab === 'services'     && <MemberServicesTab gatewayKey={gatewayKey} />}
-          {activeTab === 'payments'     && <MemberPaymentsTab gatewayKey={gatewayKey} onSuccess={refresh} />}
-          {activeTab === 'transactions' && <MemberTransactionsTab refreshTrigger={refreshTrigger} />}
-          {activeTab === 'keys'         && <MemberKeysTab refreshTrigger={refreshTrigger} onKeyGenerated={handleKeyGenerated} />}
-        </div>
-      </div>
+      {/* ── WORKSPACE BODY ── */}
+      <main className="member-os-body">
+        {activeTab === 'home' && (
+          <MemberHomeTab
+            user={user}
+            gatewayKey={gatewayKey}
+            refreshTrigger={refreshTrigger}
+            onNavigateTab={(t) => setActiveTab(t)}
+            onRefresh={refresh}
+          />
+        )}
+        {activeTab === 'payments' && (
+          <MemberPaymentsTab gatewayKey={gatewayKey} onSuccess={refresh} />
+        )}
+        {activeTab === 'services' && (
+          <MemberServicesTab gatewayKey={gatewayKey} />
+        )}
+        {activeTab === 'transactions' && (
+          <MemberTransactionsTab refreshTrigger={refreshTrigger} />
+        )}
+        {activeTab === 'keys' && (
+          <MemberKeysTab refreshTrigger={refreshTrigger} onKeyGenerated={handleKeyGenerated} />
+        )}
+      </main>
     </div>
   );
 }
